@@ -32,3 +32,17 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# --- LLM Gateway additions ---
+.env
+*.tfvars
+*.tfstate*
+.terraform/
+bin/
+dist/
+docs/evidence/*.har
+.claude/
+
+# Local-only planning files (kept on disk, not public)
+CLAUDE.md
+docs/PROGRESS.md
