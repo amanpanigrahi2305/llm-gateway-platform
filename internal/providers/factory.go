@@ -21,6 +21,8 @@ func New(name string, cfg config.Provider, getenv func(string) string) (Provider
 		return NewOpenAICompat(name, cfg.BaseURL, apiKey, cfg.Timeout, true), nil
 	case config.TypeOllama, config.TypeMock:
 		return NewOpenAICompat(name, cfg.BaseURL, apiKey, cfg.Timeout, false), nil
+	case config.TypeAnthropic:
+		return NewAnthropic(name, cfg.BaseURL, apiKey, cfg.Timeout), nil
 	}
 	return nil, fmt.Errorf("provider %s: unsupported type %q", name, cfg.Type)
 }
