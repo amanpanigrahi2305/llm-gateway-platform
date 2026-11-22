@@ -1,0 +1,11 @@
+version: "2"
+
+linters:
+  default: standard   # errcheck, govet, ineffassign, staticcheck, unused
+  exclusions:
+    presets:
+      - std-error-handling   # e.g. allow `defer resp.Body.Close()` without checking its error
+
+formatters:
+  enable:
+    - gofmt

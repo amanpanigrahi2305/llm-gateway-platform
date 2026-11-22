@@ -42,6 +42,7 @@ bin/
 dist/
 docs/evidence/*.har
 .claude/
+config.local.yaml
 
 # Local-only planning files (kept on disk, not public)
 CLAUDE.md

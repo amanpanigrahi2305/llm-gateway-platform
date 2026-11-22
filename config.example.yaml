@@ -1,0 +1,45 @@
+# LLM Gateway Platform - example config.
+# Copy to config.local.yaml (git ignores it) and edit it. Provider API keys never
+# go in this file: put them in .env and name the variable in api_key_env.
+
+server:
+  addr: ":8080"
+  shutdown_timeout: 30s   # after SIGTERM, open requests and streams get this long to finish
+  drain_delay: 0s         # wait this long (while reporting not-ready) before shutdown; ~5s on Kubernetes
+
+providers:
+  mock:
+    type: mock
+    base_url: http://localhost:9090/v1
+  ollama:
+    type: ollama
+    base_url: http://localhost:11434/v1
+  # anthropic:
+  #   type: anthropic
+  #   api_key_env: ANTHROPIC_API_KEY
+  # openai:
+  #   type: openai
+  #   api_key_env: OPENAI_API_KEY
+
+# Clients ask for an alias, never a raw model name. Each alias is an ordered list
+# of provider/model targets. Phase 1 uses the first target; Phase 2 adds failover.
+aliases:
+  fast: ["mock/mock-1"]
+  local: ["ollama/qwen2.5:0.5b"]
+  # smart: ["anthropic/claude-opus-5-5"]
+
+# USD per 1M tokens. Every alias target needs a price (0 for local models), so a
+# paid model is never silently reported as $0. Check each provider's pricing page.
+prices:
+  "mock/mock-1": {input_per_million: 1.00, output_per_million: 2.00}   # fake prices, to see the cost math
+  "ollama/qwen2.5:0.5b": {input_per_million: 0, output_per_million: 0}
+  # "anthropic/claude-opus-5-5": {input_per_million: 4.00, output_per_million: 20.00}
+
+# Client keys. Run `gateway gen-key`, give the key to the client, paste the hash here.
+keys:
+  - id: dev
+    owner: aman
+    team: platform
+    hash: "replace-with-the-hash-from-gateway-gen-key"
+    aliases: ["*"]
+    policy: default   # limit policy name; enforced from Phase 2
