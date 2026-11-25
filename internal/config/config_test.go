@@ -24,6 +24,8 @@ keys:
   - id: dev
     hash: "` + strings.Repeat("a", 64) + `"
     aliases: ["*"]
+policies:
+  default: {requests_per_minute: 60, daily_usd: 5}
 `
 
 func TestParseValidConfigFillsDefaults(t *testing.T) {
@@ -49,6 +51,9 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	if got := c.Keys[0].Policy; got != "default" {
 		t.Errorf("policy = %q, want default", got)
 	}
+	if c.Limits.OnStoreError != FailOpen || c.Policies["default"].RequestsPerMinute != 60 {
+		t.Errorf("limits = %+v, policies = %+v", c.Limits, c.Policies)
+	}
 	if r := c.Reliability; r.MaxAttempts != 2 || r.BackoffBase != 100*time.Millisecond || r.BackoffMax != 2*time.Second ||
 		r.BreakerFailures != 5 || r.BreakerCooldown != 30*time.Second {
 		t.Errorf("reliability = %+v, want defaults 2, 100ms, 2s, 5, 30s", r)
@@ -72,6 +77,9 @@ func TestParseRejectsBadConfig(t *testing.T) {
 		{"unknown alias on key", strings.Replace(validYAML, `aliases: ["*"]`, `aliases: ["slow"]`, 1), `unknown alias "slow"`},
 		{"ttft longer than total", strings.Replace(validYAML, "type: ollama", "type: ollama\n    ttft_timeout: 2m\n    timeout: 1m", 1), "ttft_timeout must not be longer than timeout"},
 		{"too many attempts", validYAML + "reliability: {max_attempts: 50}\n", "max_attempts must be between 1 and 10"},
+		{"unknown policy on key", strings.Replace(validYAML, `aliases: ["*"]`, `aliases: ["*"]`+"\n    policy: gold", 1), `unknown policy "gold"`},
+		{"bad store rule", validYAML + "limits: {on_store_error: maybe}\n", "on_store_error must be fail_open or fail_closed"},
+		{"negative budget", strings.Replace(validYAML, "daily_usd: 5", "daily_usd: -1", 1), "limits must not be negative"},
 		{"backoff base above max", validYAML + "reliability: {backoff_base: 5s, backoff_max: 1s}\n", "backoff_base must not be negative or larger"},
 	}
 	for _, tt := range tests {

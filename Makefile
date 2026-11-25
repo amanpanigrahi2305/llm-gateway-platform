@@ -2,7 +2,7 @@
 SHELL  := /bin/bash
 CONFIG ?= config.local.yaml
 
-.PHONY: help build test lint fmt run-mock run-gateway gen-key clean
+.PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -25,6 +25,18 @@ clean: ## remove build output
 
 test: ## unit tests with the race detector
 	go test -race -count=1 ./...
+
+test-integration: ## tests against the local Redis from dev-up (database 15)
+	GATEWAY_TEST_REDIS_URL=redis://localhost:6380/15 go test -race -count=1 -run Redis -v ./internal/limits/
+
+# Local services for development, in Docker. Ports are bound to 127.0.0.1 only,
+# so nobody else on the network can reach these password-less services.
+# Host port 6380 (not 6379) avoids a clash with a Redis already on the laptop.
+dev-up: ## start the local Redis
+	docker start llm-gw-redis 2>/dev/null || docker run -d --name llm-gw-redis -p 127.0.0.1:6380:6379 redis:8-alpine
+
+dev-down: ## remove the local Redis
+	docker rm -f llm-gw-redis
 
 lint: ## go vet + golangci-lint
 	go vet ./...

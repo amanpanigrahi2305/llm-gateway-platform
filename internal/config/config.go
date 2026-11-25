@@ -33,6 +33,31 @@ type Config struct {
 	Prices      map[string]Price    `yaml:"prices"`  // "provider/model" -> price
 	Keys        []Key               `yaml:"keys"`
 	Reliability Reliability         `yaml:"reliability"`
+	Limits      Limits              `yaml:"limits"`
+	Policies    map[string]Policy   `yaml:"policies"` // limit policies; each key names one
+}
+
+// Where Limits.OnStoreError can point.
+const (
+	FailOpen   = "fail_open"   // the limit store is down: let requests through
+	FailClosed = "fail_closed" // the limit store is down: refuse requests with 503
+)
+
+// Limits says where rate-limit and budget counters live.
+type Limits struct {
+	// RedisURLEnv names the env var that holds the Redis URL (it may hold a
+	// password). Empty means in-memory counters, which are correct only with
+	// one gateway replica.
+	RedisURLEnv  string `yaml:"redis_url_env"`
+	OnStoreError string `yaml:"on_store_error"` // fail_open (default) or fail_closed
+}
+
+// Policy is a set of limits for client keys. 0 means no limit.
+type Policy struct {
+	RequestsPerMinute int     `yaml:"requests_per_minute"`
+	TokensPerMinute   int     `yaml:"tokens_per_minute"`
+	DailyUSD          float64 `yaml:"daily_usd"`
+	MonthlyUSD        float64 `yaml:"monthly_usd"`
 }
 
 // Reliability holds the retry and circuit breaker settings.
@@ -74,7 +99,7 @@ type Key struct {
 	Owner   string   `yaml:"owner"`
 	Team    string   `yaml:"team"`
 	Aliases []string `yaml:"aliases"` // aliases this key may use; "*" means all
-	Policy  string   `yaml:"policy"`  // limit policy name, enforced from Phase 2
+	Policy  string   `yaml:"policy"`  // name of a limit policy in policies
 }
 
 var defaultBaseURL = map[string]string{
@@ -164,6 +189,9 @@ func (c *Config) setDefaults() {
 	if r.BreakerCooldown == 0 {
 		r.BreakerCooldown = 30 * time.Second
 	}
+	if c.Limits.OnStoreError == "" {
+		c.Limits.OnStoreError = FailOpen
+	}
 }
 
 // validate returns every problem it finds, sorted, so one run shows them all.
@@ -184,6 +212,14 @@ func (c *Config) validate() []string {
 	}
 	if r := c.Reliability; r.BreakerFailures < 1 || r.BreakerCooldown < 0 {
 		add("reliability: breaker_failures must be at least 1 and breaker_cooldown not negative")
+	}
+	if s := c.Limits.OnStoreError; s != FailOpen && s != FailClosed {
+		add("limits: on_store_error must be %s or %s, not %q", FailOpen, FailClosed, s)
+	}
+	for name, p := range c.Policies {
+		if p.RequestsPerMinute < 0 || p.TokensPerMinute < 0 || p.DailyUSD < 0 || p.MonthlyUSD < 0 {
+			add("policies.%s: limits must not be negative (0 means no limit)", name)
+		}
 	}
 
 	if len(c.Providers) == 0 {
@@ -272,6 +308,9 @@ func (c *Config) validate() []string {
 			if _, ok := c.Aliases[a]; !ok && a != "*" {
 				add("%s: unknown alias %q", where, a)
 			}
+		}
+		if _, ok := c.Policies[k.Policy]; !ok {
+			add("%s: unknown policy %q; define it under policies (all limits 0 means no limit)", where, k.Policy)
 		}
 	}
 
