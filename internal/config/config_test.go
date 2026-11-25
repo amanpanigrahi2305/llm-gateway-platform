@@ -39,6 +39,9 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	if c.Server.ShutdownTimeout != 30*time.Second {
 		t.Errorf("shutdown_timeout = %v, want 30s default", c.Server.ShutdownTimeout)
 	}
+	if c.Server.MaxConnectionAge != 30*time.Second {
+		t.Errorf("max_connection_age = %v, want 30s default", c.Server.MaxConnectionAge)
+	}
 	if got := c.Providers["mock"].BaseURL; got != "http://localhost:9090/v1" {
 		t.Errorf("mock base_url = %q, want trailing slash removed", got)
 	}

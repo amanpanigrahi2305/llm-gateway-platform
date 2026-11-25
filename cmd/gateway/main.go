@@ -146,12 +146,15 @@ func serve(args []string) error {
 		Cache:   responseCache,
 		Ledger:  ledger,
 		Log:     log,
+
+		MaxConnAge: cfg.Server.MaxConnectionAge,
 	})
 
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           apiServer.Handler(),
-		ReadHeaderTimeout: 10 * time.Second, // slow-header (Slowloris) protection
+		ConnContext:       apiServer.ConnContext, // per-connection age limit (max_connection_age)
+		ReadHeaderTimeout: 10 * time.Second,      // slow-header (Slowloris) protection
 		IdleTimeout:       120 * time.Second,
 		// No WriteTimeout on purpose: it would cut off long streaming answers.
 	}
@@ -162,7 +165,8 @@ func serve(args []string) error {
 	listenErr := make(chan error, 1)
 	go func() { listenErr <- srv.ListenAndServe() }()
 	apiServer.SetReady(true)
-	log.Info("gateway listening", "version", version, "addr", cfg.Server.Addr, "aliases", rt.Aliases(), "providers", len(provs))
+	log.Info("gateway listening", "version", version, "addr", cfg.Server.Addr, "aliases", rt.Aliases(), "providers", len(provs),
+		"max_connection_age", cfg.Server.MaxConnectionAge.String())
 
 	select {
 	case err := <-listenErr:

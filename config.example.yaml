@@ -6,6 +6,7 @@ server:
   addr: ":8080"
   shutdown_timeout: 30s   # after SIGTERM, open requests and streams get this long to finish
   drain_delay: 0s         # wait this long (while reporting not-ready) before shutdown; ~5s on Kubernetes
+  max_connection_age: 30s # ask clients to reconnect after this long (±10%), so new pods get traffic; -1s = off
 
 # Timeouts per provider (defaults shown on mock):
 #   connect_timeout  TCP connect + TLS handshake           (default 5s)

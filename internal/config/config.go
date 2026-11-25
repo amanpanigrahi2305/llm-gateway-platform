@@ -93,6 +93,9 @@ type Server struct {
 	Addr            string        `yaml:"addr"`
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"` // how long open requests may finish after SIGTERM
 	DrainDelay      time.Duration `yaml:"drain_delay"`      // wait after reporting not-ready, before shutdown
+	// MaxConnectionAge asks clients to reconnect once a keep-alive connection is
+	// this old (±10%), so new pods get traffic. Default 30s; negative turns it off.
+	MaxConnectionAge time.Duration `yaml:"max_connection_age"`
 }
 
 // Provider is one upstream LLM API.
@@ -170,6 +173,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.ShutdownTimeout == 0 {
 		c.Server.ShutdownTimeout = 30 * time.Second
+	}
+	if c.Server.MaxConnectionAge == 0 {
+		c.Server.MaxConnectionAge = 30 * time.Second
 	}
 	for name, p := range c.Providers {
 		if p.BaseURL == "" {

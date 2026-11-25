@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/cache"
@@ -28,25 +29,31 @@ type Deps struct {
 	Cache   *cache.Cache    // nil means no response cache
 	Ledger  *usage.Ledger   // nil means usage records go only to the log
 	Log     *slog.Logger
+	// MaxConnAge asks clients to reconnect once a connection is this old (±10%).
+	// Zero or negative turns it off. Needs ConnContext set on the http.Server.
+	MaxConnAge time.Duration
 }
 
 // Server serves the API.
 type Server struct {
-	router  *router.Router
-	keys    *auth.Store
-	prices  usage.PriceTable
-	limiter *limits.Limiter
-	cache   *cache.Cache
-	ledger  *usage.Ledger
-	log     *slog.Logger
-	ready   atomic.Bool
-	bg      sync.WaitGroup // work that runs after the response, such as usage counting
+	router     *router.Router
+	keys       *auth.Store
+	prices     usage.PriceTable
+	limiter    *limits.Limiter
+	cache      *cache.Cache
+	ledger     *usage.Ledger
+	log        *slog.Logger
+	ready      atomic.Bool
+	bg         sync.WaitGroup // work that runs after the response, such as usage counting
+	maxConnAge time.Duration
+	now        func() time.Time // replaced in tests
+	jitter     func() float64   // replaced in tests
 }
 
 // New returns an API server. It reports not-ready until SetReady(true).
 func New(d Deps) *Server {
 	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, cache: d.Cache,
-		ledger: d.Ledger, log: d.Log}
+		ledger: d.Ledger, log: d.Log, maxConnAge: d.MaxConnAge, now: time.Now, jitter: defaultJitter}
 }
 
 // Wait blocks until background work started by requests is done. The
@@ -64,7 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.readyz)
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
-	return mux
+	return s.closeOldConns(mux)
 }
 
 // healthz is the liveness probe: the process is up and answers HTTP.
