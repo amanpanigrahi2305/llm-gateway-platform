@@ -1,0 +1,42 @@
+# Gateway config for the docker compose stack. Services reach each other by
+# their compose names (mock-a, ollama, ...). See config.example.yaml for every
+# option and its meaning.
+server:
+  addr: ":8080"
+  shutdown_timeout: 30s
+
+providers:
+  mock-a: {type: mock, base_url: "http://mock-a:9090/v1", ttft_timeout: 5s}
+  mock-b: {type: mock, base_url: "http://mock-b:9090/v1", ttft_timeout: 5s}
+  ollama: {type: ollama, base_url: "http://ollama:11434/v1", ttft_timeout: 60s}
+
+aliases:
+  fast: ["mock-a/mock-1", "mock-b/mock-1"]   # mock-b takes over when mock-a fails
+  local: ["ollama/qwen2.5:0.5b"]
+
+prices:
+  "mock-a/mock-1": {input_per_million: 1.00, output_per_million: 2.00}   # fake prices, to see the cost math
+  "mock-b/mock-1": {input_per_million: 1.00, output_per_million: 2.00}
+  "ollama/qwen2.5:0.5b": {input_per_million: 0, output_per_million: 0}
+
+limits:
+  redis_url_env: GATEWAY_REDIS_URL
+  on_store_error: fail_open
+
+ledger:
+  database_url_env: GATEWAY_DATABASE_URL
+
+policies:
+  default: {requests_per_minute: 600, tokens_per_minute: 1000000, daily_usd: 5, monthly_usd: 50}
+
+keys:
+  # DEMO KEY for this local stack only. The key is: sk-gw-local-demo-only
+  # It is public on purpose, so `make compose-up` works with no setup, and the
+  # ports listen on 127.0.0.1 only. Before the gateway is reachable from any
+  # other machine, replace it: run `gateway gen-key` and paste the new hash.
+  - id: demo
+    owner: local
+    team: demo
+    hash: "783e8e8482a97aa521a59af69b9866b215910be263961180c5021e67963f958e"
+    aliases: ["*"]
+    policy: default

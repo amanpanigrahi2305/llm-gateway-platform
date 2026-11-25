@@ -6,8 +6,10 @@ IMAGE      ?= llm-gateway
 MOCK_IMAGE ?= llm-gateway-mock
 TAG        ?= dev
 
+COMPOSE    := docker compose -f deploy/compose/compose.yaml --env-file .env
+
 .PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
-	docker-build docker-build-multiarch
+	docker-build docker-build-multiarch compose-up compose-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -56,6 +58,12 @@ dev-up: ## start the local Redis and Postgres (Postgres password from .env)
 
 dev-down: ## remove the local Redis and Postgres (the ledger data goes too)
 	docker rm -f llm-gw-redis llm-gw-postgres
+
+compose-up: ## start the laptop stack: gateway, Redis, Postgres, Ollama, 2 mocks (needs .env)
+	$(COMPOSE) up -d --build
+
+compose-down: ## stop the laptop stack (data volumes are kept)
+	$(COMPOSE) down
 
 lint: ## go vet + golangci-lint
 	go vet ./...

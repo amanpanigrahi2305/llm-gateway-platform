@@ -1,0 +1,81 @@
+# Laptop stack: the gateway with Redis, Postgres, Ollama (a small local model)
+# and two mock providers.
+#   make compose-up      start (needs GATEWAY_DB_PASSWORD in the repo's .env)
+#   make compose-down    stop (data volumes are kept)
+# Ports are bound to 127.0.0.1, so only this machine can reach them.
+# Prometheus, Grafana and the OpenTelemetry collector join in Phase 4.
+name: llm-gateway
+
+# The same safety settings for the containers built from this repo: a
+# read-only file system, no Linux capabilities, no privilege escalation.
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  gateway:
+    <<: *hardening
+    build: {context: ../.., target: gateway}
+    image: llm-gateway:dev
+    ports: ["127.0.0.1:8080:8080"]
+    environment:
+      GATEWAY_REDIS_URL: redis://redis:6379/0
+      GATEWAY_DATABASE_URL: postgres://gateway:${GATEWAY_DB_PASSWORD:?set GATEWAY_DB_PASSWORD in .env}@postgres:5432/gateway?sslmode=disable
+    volumes: ["./config.yaml:/etc/llm-gateway/config.yaml:ro"]
+    depends_on:
+      redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+      mock-a: {condition: service_started}
+      mock-b: {condition: service_started}
+    stop_grace_period: 40s   # longer than shutdown_timeout, so open streams can finish
+    restart: unless-stopped
+
+  # Two copies of the fake LLM. Their admin APIs (outage switch, latency) are
+  # on 127.0.0.1:9090 and :9091 for failover demos.
+  mock-a:
+    <<: *hardening
+    build: {context: ../.., target: mockprovider}
+    image: llm-gateway-mock:dev
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+  mock-b:
+    <<: *hardening
+    build: {context: ../.., target: mockprovider}
+    image: llm-gateway-mock:dev
+    ports: ["127.0.0.1:9091:9090"]
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 2s, timeout: 2s, retries: 15}
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_DB: gateway
+      POSTGRES_PASSWORD: ${GATEWAY_DB_PASSWORD:?set GATEWAY_DB_PASSWORD in .env}
+    volumes: ["pgdata:/var/lib/postgresql"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"], interval: 2s, timeout: 2s, retries: 15}
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.40.17
+    volumes: ["ollama:/root/.ollama"]
+    healthcheck: {test: ["CMD", "ollama", "list"], interval: 3s, timeout: 3s, retries: 20}
+    restart: unless-stopped
+
+  # One-shot job: download the small model (about 400 MB) if it is missing.
+  ollama-pull:
+    image: ollama/ollama:0.40.17
+    environment: {OLLAMA_HOST: "ollama:11434"}
+    entrypoint: ["ollama", "pull", "qwen2.5:0.5b"]
+    depends_on: {ollama: {condition: service_healthy}}
+    restart: "no"
+
+volumes:
+  pgdata:
+  ollama:
+    name: llm-gw-ollama   # the same volume as `docker run -v llm-gw-ollama:...`, so a model pulled before is reused
