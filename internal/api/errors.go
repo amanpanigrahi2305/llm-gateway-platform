@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 )
 
 // statusClientClosed is logged when the client disconnects before the answer
@@ -44,6 +45,10 @@ func writeError(w http.ResponseWriter, e apiError) {
 // short error type for the log. A 4xx that the request itself caused is passed
 // through; failures on the provider side become 502, or 504 for a timeout.
 func upstreamError(err error) (apiError, string) {
+	if errors.Is(err, router.ErrCircuitOpen) {
+		return apiError{http.StatusServiceUnavailable, "api_error", "providers_unavailable",
+			"every provider for this model is failing right now; try again later"}, "circuit_open"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return apiError{http.StatusGatewayTimeout, "api_error", "upstream_timeout", "upstream provider timed out"}, "upstream_timeout"
 	}

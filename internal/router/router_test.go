@@ -64,11 +64,19 @@ func (f *fakeProvider) callCount() int {
 
 func upstream(status int) error { return &providers.Error{Provider: "test", Status: status} }
 
-var opts = Options{MaxAttempts: 2, BackoffBase: 100 * time.Millisecond, BackoffMax: time.Second}
+var opts = Options{
+	MaxAttempts: 2, BackoffBase: 100 * time.Millisecond, BackoffMax: time.Second,
+	Breaker: BreakerConfig{Failures: 5, Cooldown: 30 * time.Second},
+}
 
 // newTestRouter builds a router with alias "fast" = primary, then backup.
 // Sleeps are recorded instead of waited.
 func newTestRouter(t *testing.T, primary, backup *fakeProvider) (*Router, *[]time.Duration) {
+	t.Helper()
+	return newRouterWith(t, opts, primary, backup)
+}
+
+func newRouterWith(t *testing.T, o Options, primary, backup *fakeProvider) (*Router, *[]time.Duration) {
 	t.Helper()
 	r, err := New(
 		map[string][]string{
@@ -76,7 +84,7 @@ func newTestRouter(t *testing.T, primary, backup *fakeProvider) (*Router, *[]tim
 			"local": {"backup/qwen2.5:0.5b"},
 		},
 		map[string]providers.Provider{"primary": primary, "backup": backup},
-		opts,
+		o,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -236,6 +244,81 @@ func TestClientGoneStopsRetries(t *testing.T) {
 	_, out, err := r.Chat(ctx, "fast", providers.ChatRequest{})
 	if err == nil || out.Attempts != 1 || backup.callCount() != 0 {
 		t.Errorf("err %v, outcome %+v, backup calls %d; want stop after the client left", err, out, backup.callCount())
+	}
+}
+
+// breakerRouter has one try per target and breakers that open after 2 failures.
+func breakerRouter(t *testing.T, primary, backup *fakeProvider) (*Router, *fakeClock) {
+	t.Helper()
+	o := opts
+	o.MaxAttempts = 1
+	o.Breaker = BreakerConfig{Failures: 2, Cooldown: time.Minute}
+	r, _ := newRouterWith(t, o, primary, backup)
+	clock := &fakeClock{t: time.Unix(1_000_000, 0)}
+	for _, b := range r.breakers {
+		b.now = clock.Now
+	}
+	return r, clock
+}
+
+func TestOpenBreakerSkipsProvider(t *testing.T) {
+	down := []error{upstream(503), upstream(503), upstream(503)}
+	primary, backup := &fakeProvider{name: "primary", errs: down}, &fakeProvider{name: "backup"}
+	r, clock := breakerRouter(t, primary, backup)
+	ctx := context.Background()
+
+	for range 2 { // two failures open primary's breaker; backup answers both times
+		if resp, _, err := r.Chat(ctx, "fast", providers.ChatRequest{}); err != nil || resp.Content != "from backup" {
+			t.Fatalf("resp %v, err %v", resp, err)
+		}
+	}
+	if r.BreakerStates()["primary"] != Open {
+		t.Fatalf("primary breaker = %v, want open", r.BreakerStates()["primary"])
+	}
+	_, out, err := r.Chat(ctx, "fast", providers.ChatRequest{})
+	if err != nil || primary.callCount() != 2 || out.Attempts != 1 || out.Failovers != 1 {
+		t.Fatalf("err %v, primary calls %d, outcome %+v; want primary skipped", err, primary.callCount(), out)
+	}
+
+	// After the cool-down one probe goes to primary. It fails (third scripted
+	// error), so the breaker opens again and backup answers.
+	clock.Advance(time.Minute)
+	if _, _, err := r.Chat(ctx, "fast", providers.ChatRequest{}); err != nil || primary.callCount() != 3 {
+		t.Fatalf("err %v, primary calls %d; want one probe", err, primary.callCount())
+	}
+	if r.BreakerStates()["primary"] != Open {
+		t.Fatalf("primary breaker = %v after a failed probe, want open", r.BreakerStates()["primary"])
+	}
+
+	// The next probe succeeds (the script has no more errors): the breaker closes.
+	clock.Advance(time.Minute)
+	resp, _, err := r.Chat(ctx, "fast", providers.ChatRequest{})
+	if err != nil || resp.Content != "from primary" || r.BreakerStates()["primary"] != Closed {
+		t.Fatalf("resp %v, err %v, state %v; want primary back and closed", resp, err, r.BreakerStates()["primary"])
+	}
+}
+
+func TestAllBreakersOpen(t *testing.T) {
+	down := []error{upstream(500), upstream(500)}
+	primary, backup := &fakeProvider{name: "primary", errs: down}, &fakeProvider{name: "backup", errs: down}
+	r, _ := breakerRouter(t, primary, backup)
+	for range 2 {
+		_, _, _ = r.Chat(context.Background(), "fast", providers.ChatRequest{})
+	}
+	_, out, err := r.Chat(context.Background(), "fast", providers.ChatRequest{})
+	if !errors.Is(err, ErrCircuitOpen) || out.Attempts != 0 {
+		t.Fatalf("err %v, outcome %+v; want ErrCircuitOpen and no attempts", err, out)
+	}
+}
+
+func TestClientErrorsDoNotOpenBreaker(t *testing.T) {
+	bad := []error{upstream(400), upstream(400), upstream(400)}
+	r, _ := breakerRouter(t, &fakeProvider{name: "primary", errs: bad}, &fakeProvider{name: "backup"})
+	for range 3 {
+		_, _, _ = r.Chat(context.Background(), "fast", providers.ChatRequest{})
+	}
+	if r.BreakerStates()["primary"] != Closed {
+		t.Fatal("400 errors opened the breaker; they are the client's fault")
 	}
 }
 

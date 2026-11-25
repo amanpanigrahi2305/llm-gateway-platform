@@ -283,6 +283,7 @@ func TestUpstreamErrorMapping(t *testing.T) {
 		{"provider 500", &providers.Error{Provider: "fake", Status: 500}, 502, "upstream_error"},
 		{"model missing upstream", &providers.Error{Provider: "fake", Status: 404, Message: "model not found"}, 502, "upstream_error"},
 		{"timeout", &providers.Error{Provider: "fake", Message: "request failed", Err: context.DeadlineExceeded}, 504, "upstream_timeout"},
+		{"every breaker open", router.ErrCircuitOpen, 503, "providers_unavailable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

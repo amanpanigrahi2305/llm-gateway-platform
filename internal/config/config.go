@@ -35,11 +35,13 @@ type Config struct {
 	Reliability Reliability         `yaml:"reliability"`
 }
 
-// Reliability holds the retry settings.
+// Reliability holds the retry and circuit breaker settings.
 type Reliability struct {
-	MaxAttempts int           `yaml:"max_attempts"` // tries per target, the first try included
-	BackoffBase time.Duration `yaml:"backoff_base"` // wait before the first retry; doubles on each retry
-	BackoffMax  time.Duration `yaml:"backoff_max"`  // longest wait between two tries
+	MaxAttempts     int           `yaml:"max_attempts"`     // tries per target, the first try included
+	BackoffBase     time.Duration `yaml:"backoff_base"`     // wait before the first retry; doubles on each retry
+	BackoffMax      time.Duration `yaml:"backoff_max"`      // longest wait between two tries
+	BreakerFailures int           `yaml:"breaker_failures"` // failures in a row that open a provider's breaker
+	BreakerCooldown time.Duration `yaml:"breaker_cooldown"` // open time before one probe request is let through
 }
 
 // Server holds the HTTP server settings.
@@ -148,6 +150,12 @@ func (c *Config) setDefaults() {
 	if r.BackoffMax == 0 {
 		r.BackoffMax = 2 * time.Second
 	}
+	if r.BreakerFailures == 0 {
+		r.BreakerFailures = 5
+	}
+	if r.BreakerCooldown == 0 {
+		r.BreakerCooldown = 30 * time.Second
+	}
 }
 
 // validate returns every problem it finds, sorted, so one run shows them all.
@@ -165,6 +173,9 @@ func (c *Config) validate() []string {
 	}
 	if r := c.Reliability; r.BackoffBase < 0 || r.BackoffMax < r.BackoffBase {
 		add("reliability: backoff_base must not be negative or larger than backoff_max")
+	}
+	if r := c.Reliability; r.BreakerFailures < 1 || r.BreakerCooldown < 0 {
+		add("reliability: breaker_failures must be at least 1 and breaker_cooldown not negative")
 	}
 
 	if len(c.Providers) == 0 {

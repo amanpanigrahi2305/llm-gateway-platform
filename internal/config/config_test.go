@@ -49,8 +49,9 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	if got := c.Keys[0].Policy; got != "default" {
 		t.Errorf("policy = %q, want default", got)
 	}
-	if r := c.Reliability; r.MaxAttempts != 2 || r.BackoffBase != 100*time.Millisecond || r.BackoffMax != 2*time.Second {
-		t.Errorf("reliability = %+v, want defaults 2, 100ms, 2s", r)
+	if r := c.Reliability; r.MaxAttempts != 2 || r.BackoffBase != 100*time.Millisecond || r.BackoffMax != 2*time.Second ||
+		r.BreakerFailures != 5 || r.BreakerCooldown != 30*time.Second {
+		t.Errorf("reliability = %+v, want defaults 2, 100ms, 2s, 5, 30s", r)
 	}
 }
 

@@ -97,10 +97,13 @@ func serve(args []string) error {
 		}
 		provs[name] = p
 	}
+	rel := cfg.Reliability
 	rt, err := router.New(cfg.Aliases, provs, router.Options{
-		MaxAttempts: cfg.Reliability.MaxAttempts,
-		BackoffBase: cfg.Reliability.BackoffBase,
-		BackoffMax:  cfg.Reliability.BackoffMax,
+		MaxAttempts: rel.MaxAttempts,
+		BackoffBase: rel.BackoffBase,
+		BackoffMax:  rel.BackoffMax,
+		Breaker:     router.BreakerConfig{Failures: rel.BreakerFailures, Cooldown: rel.BreakerCooldown},
+		Log:         log,
 	})
 	if err != nil {
 		return err

@@ -35,6 +35,8 @@ reliability:
   max_attempts: 2        # tries per target, the first try included
   backoff_base: 100ms    # wait before the first retry (random 0..base, doubles each retry)
   backoff_max: 2s        # longest wait between two tries
+  breaker_failures: 5    # failures in a row that open a provider's circuit breaker
+  breaker_cooldown: 30s  # open time; then one probe request tests the provider
 
 # USD per 1M tokens. Every alias target needs a price (0 for local models), so a
 # paid model is never silently reported as $0. Check each provider's pricing page.

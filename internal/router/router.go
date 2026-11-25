@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -16,8 +17,12 @@ import (
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 )
 
-// ErrUnknownAlias means the client asked for a model alias that is not configured.
-var ErrUnknownAlias = errors.New("unknown model alias")
+var (
+	// ErrUnknownAlias means the client asked for a model alias that is not configured.
+	ErrUnknownAlias = errors.New("unknown model alias")
+	// ErrCircuitOpen means every target was skipped because its breaker is open.
+	ErrCircuitOpen = errors.New("circuit breaker is open for every provider of this model")
+)
 
 // Target is one provider/model pair behind an alias.
 type Target struct {
@@ -28,11 +33,13 @@ type Target struct {
 // String returns "provider/model", the key used in the price table.
 func (t Target) String() string { return t.Provider.Name() + "/" + t.Model }
 
-// Options control retries.
+// Options control retries and circuit breakers.
 type Options struct {
 	MaxAttempts int           // tries per target, the first try included
 	BackoffBase time.Duration // wait before the first retry; doubles on each retry
 	BackoffMax  time.Duration // longest wait between two tries
+	Breaker     BreakerConfig // one breaker per provider
+	Log         *slog.Logger  // breaker state changes are logged here; nil means no logs
 }
 
 // Outcome tells the caller what the router did, for the usage record.
@@ -44,20 +51,29 @@ type Outcome struct {
 
 // Router resolves aliases and sends requests to their targets.
 type Router struct {
-	aliases map[string][]Target
-	opts    Options
-	sleep   func(context.Context, time.Duration) error // replaced in tests
-	randN   func(n int64) int64                        // random number in [0, n); replaced in tests
+	aliases  map[string][]Target
+	opts     Options
+	breakers map[string]*Breaker                        // by provider name
+	sleep    func(context.Context, time.Duration) error // replaced in tests
+	randN    func(n int64) int64                        // random number in [0, n); replaced in tests
 }
 
 // New builds a Router from the config aliases and the built providers.
 func New(aliases map[string][]string, provs map[string]providers.Provider, opts Options) (*Router, error) {
 	opts.MaxAttempts = max(opts.MaxAttempts, 1)
 	r := &Router{
-		aliases: make(map[string][]Target, len(aliases)),
-		opts:    opts,
-		sleep:   sleepContext,
-		randN:   rand.Int64N,
+		aliases:  make(map[string][]Target, len(aliases)),
+		opts:     opts,
+		breakers: make(map[string]*Breaker, len(provs)),
+		sleep:    sleepContext,
+		randN:    rand.Int64N,
+	}
+	for name := range provs {
+		r.breakers[name] = NewBreaker(opts.Breaker, func(from, to State) {
+			if opts.Log != nil {
+				opts.Log.Warn("circuit breaker state changed", "provider", name, "from", from.String(), "to", to.String())
+			}
+		})
 	}
 	for alias, targets := range aliases {
 		for _, t := range targets {
@@ -126,8 +142,9 @@ func (r *Router) ChatStream(ctx context.Context, alias string, req providers.Cha
 // answer already went to the client; such a call is never repeated.
 type attemptFunc func(ctx context.Context, t Target) (started bool, err error)
 
-// run tries the alias's targets in order. Each target gets up to MaxAttempts
-// tries for temporary errors, then the next target takes over.
+// run tries the alias's targets in order. A target whose breaker is open is
+// skipped. Each other target gets up to MaxAttempts tries for temporary
+// errors, then the next target takes over.
 func (r *Router) run(ctx context.Context, alias string, attempt attemptFunc) (Outcome, error) {
 	targets, err := r.Resolve(alias)
 	if err != nil {
@@ -136,7 +153,7 @@ func (r *Router) run(ctx context.Context, alias string, attempt attemptFunc) (Ou
 	var out Outcome
 	var lastErr error
 	for i, t := range targets {
-		out.Target, out.Failovers = t, i
+		b := r.breakers[t.Provider.Name()]
 	tries:
 		for try := 1; try <= r.opts.MaxAttempts; try++ {
 			if try > 1 {
@@ -144,16 +161,31 @@ func (r *Router) run(ctx context.Context, alias string, attempt attemptFunc) (Ou
 					return out, err // the client left during the wait
 				}
 			}
+			if !b.Allow() {
+				break // breaker open: go to the next target
+			}
+			out.Target, out.Failovers = t, i
 			out.Attempts++
 			started, err := attempt(ctx, t)
 			if err == nil {
+				b.Success()
 				return out, nil
 			}
 			lastErr = err
-			if started || ctx.Err() != nil {
-				return out, err // part of the answer was sent, or the client left
+			if ctx.Err() != nil {
+				b.Abort() // the client left; this says nothing about the provider
+				return out, err
 			}
-			switch classify(err) {
+			act := classify(err)
+			if act == retry {
+				b.Failure()
+			} else {
+				b.Success() // the provider answered; the problem is the request or the config
+			}
+			if started {
+				return out, err // part of the answer was sent: never try again
+			}
+			switch act {
 			case stop:
 				return out, err
 			case skip:
@@ -161,7 +193,19 @@ func (r *Router) run(ctx context.Context, alias string, attempt attemptFunc) (Ou
 			}
 		}
 	}
+	if lastErr == nil {
+		return out, ErrCircuitOpen
+	}
 	return out, lastErr
+}
+
+// BreakerStates returns the breaker state of each provider.
+func (r *Router) BreakerStates() map[string]State {
+	states := make(map[string]State, len(r.breakers))
+	for name, b := range r.breakers {
+		states[name] = b.State()
+	}
+	return states
 }
 
 // action is what the router does after a failed attempt.
