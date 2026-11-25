@@ -21,6 +21,7 @@ import (
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/api"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/cache"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/config"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
@@ -119,11 +120,18 @@ func serve(args []string) error {
 	}
 	defer closeStore()
 
+	var responseCache *cache.Cache
+	if cfg.Cache.Enabled {
+		responseCache = cache.New(cfg.Cache.TTL, cfg.Cache.MaxEntries)
+		log.Info("response cache is on: temperature-0 answers are kept in memory", "ttl", cfg.Cache.TTL.String())
+	}
+
 	apiServer := api.New(api.Deps{
 		Router:  rt,
 		Keys:    auth.NewStore(cfg.Keys),
 		Prices:  usage.PriceTable(cfg.Prices),
 		Limiter: limiter,
+		Cache:   responseCache,
 		Log:     log,
 	})
 

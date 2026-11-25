@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/cache"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
@@ -195,6 +196,18 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 // complete handles a normal (non-streaming) request.
 func (s *Server) complete(w http.ResponseWriter, r *http.Request, req chatRequest, preq providers.ChatRequest,
 	promptChars int, rec *usage.Record) {
+	cacheKey := ""
+	if s.cache != nil {
+		cacheKey = cache.Key(rec.KeyID, req.Model, preq) // "" when the request must not be cached
+	}
+	if cacheKey != "" {
+		if e, ok := s.cache.Get(cacheKey); ok {
+			s.serveCached(w, req, e, rec)
+			return
+		}
+		w.Header().Set("X-Gateway-Cache", "miss")
+	}
+
 	resp, out, err := s.router.Chat(r.Context(), req.Model, preq)
 	s.setOutcome(w, rec, out)
 	if err != nil {
@@ -206,10 +219,31 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request, req chatReques
 	if finish == "" {
 		finish = providers.FinishStop
 	}
+	if cacheKey != "" {
+		s.cache.Put(cacheKey, cache.Entry{Content: resp.Content, FinishReason: finish, Usage: u,
+			Provider: rec.Provider, Model: rec.Model})
+	}
 	rec.Status = http.StatusOK
+	writeCompletion(w, rec.RequestID, req.Model, resp.Content, finish, u)
+}
+
+// serveCached answers from the cache. No provider is called, so the record
+// has no tokens and no cost (they do not count toward limits); saved_usd is
+// what the upstream call would have cost.
+func (s *Server) serveCached(w http.ResponseWriter, req chatRequest, e cache.Entry, rec *usage.Record) {
+	h := w.Header()
+	h.Set("X-Gateway-Cache", "hit")
+	h.Set("X-Gateway-Provider", e.Provider)
+	h.Set("X-Gateway-Model", e.Model)
+	rec.CacheHit, rec.Provider, rec.Model, rec.Status = true, e.Provider, e.Model, http.StatusOK
+	rec.SavedUSD, _ = s.prices.Cost(e.Provider+"/"+e.Model, e.Usage.PromptTokens, e.Usage.CompletionTokens)
+	writeCompletion(w, rec.RequestID, req.Model, e.Content, e.FinishReason, e.Usage)
+}
+
+func writeCompletion(w http.ResponseWriter, id, model, content, finish string, u providers.Usage) {
 	writeJSON(w, http.StatusOK, completionBody{
-		ID: rec.RequestID, Object: "chat.completion", Created: time.Now().Unix(), Model: req.Model,
-		Choices: []completionChoice{{Message: message{Role: "assistant", Content: resp.Content}, FinishReason: finish}},
+		ID: id, Object: "chat.completion", Created: time.Now().Unix(), Model: model,
+		Choices: []completionChoice{{Message: message{Role: "assistant", Content: content}, FinishReason: finish}},
 		Usage:   toUsageBody(u),
 	})
 }

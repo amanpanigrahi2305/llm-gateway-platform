@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/cache"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
@@ -24,6 +25,7 @@ type Deps struct {
 	Keys    *auth.Store
 	Prices  usage.PriceTable
 	Limiter *limits.Limiter // nil means no rate limits or budgets
+	Cache   *cache.Cache    // nil means no response cache
 	Log     *slog.Logger
 }
 
@@ -33,6 +35,7 @@ type Server struct {
 	keys    *auth.Store
 	prices  usage.PriceTable
 	limiter *limits.Limiter
+	cache   *cache.Cache
 	log     *slog.Logger
 	ready   atomic.Bool
 	bg      sync.WaitGroup // work that runs after the response, such as usage counting
@@ -40,7 +43,7 @@ type Server struct {
 
 // New returns an API server. It reports not-ready until SetReady(true).
 func New(d Deps) *Server {
-	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, log: d.Log}
+	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, cache: d.Cache, log: d.Log}
 }
 
 // Wait blocks until background work started by requests is done. The

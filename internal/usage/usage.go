@@ -54,6 +54,8 @@ type Record struct {
 	CostUSD          float64
 	Attempts         int // upstream calls, retries included
 	Failovers        int // targets passed over (0 = the first target answered)
+	CacheHit         bool
+	SavedUSD         float64 // cache hit: what the upstream call would have cost
 }
 
 // Attrs returns the record as flat log fields.
@@ -77,5 +79,7 @@ func (r Record) Attrs() []slog.Attr {
 		slog.Float64("cost_usd", r.CostUSD),
 		slog.Int("attempts", r.Attempts),
 		slog.Int("failovers", r.Failovers),
+		slog.Bool("cache_hit", r.CacheHit),
+		slog.Float64("saved_usd", r.SavedUSD),
 	}
 }

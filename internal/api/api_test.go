@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/cache"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/config"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
@@ -100,7 +101,8 @@ func newTestAPIWithStore(t *testing.T, fp *fakeProvider, store limits.Store, fai
 	}
 	var logs bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&logs, nil))
-	srv := New(Deps{Router: rt, Keys: keys, Prices: prices, Limiter: limits.New(store, policies, failOpen, log), Log: log})
+	srv := New(Deps{Router: rt, Keys: keys, Prices: prices, Limiter: limits.New(store, policies, failOpen, log),
+		Cache: cache.New(time.Minute, 100), Log: log})
 	srv.SetReady(true)
 	return testAPI{srv: srv, h: srv.Handler(), logs: &logs}
 }
@@ -439,6 +441,44 @@ func TestBudgetBlocksKey(t *testing.T) {
 	}
 	if msg, _ := get(body, "error", "message").(string); !strings.Contains(msg, "daily budget") {
 		t.Errorf("message = %q; want a clear reason", msg)
+	}
+}
+
+func TestCacheServesRepeatedTemperatureZeroRequest(t *testing.T) {
+	fp := &fakeProvider{resp: &providers.ChatResponse{Content: "first answer", FinishReason: "stop",
+		Usage: &providers.Usage{PromptTokens: 10, CompletionTokens: 5}}}
+	a := newTestAPI(t, fp)
+	body := func(temp string) string {
+		return `{"model":"fast","messages":[{"role":"user","content":"hi"}],"temperature":` + temp + `}`
+	}
+	if rr := a.call("POST", "/v1/chat/completions", devKey, body("0")); rr.Header().Get("X-Gateway-Cache") != "miss" {
+		t.Fatalf("first call: X-Gateway-Cache = %q, want miss", rr.Header().Get("X-Gateway-Cache"))
+	}
+	fp.resp = &providers.ChatResponse{Content: "second answer"} // the provider would now answer differently
+
+	rr := a.call("POST", "/v1/chat/completions", devKey, body("0"))
+	got := decodeJSON(t, rr.Body.String())
+	if rr.Header().Get("X-Gateway-Cache") != "hit" || get(got, "choices", 0, "message", "content") != "first answer" ||
+		get(got, "usage", "total_tokens") != float64(15) || rr.Header().Get("X-Gateway-Provider") != "fake" {
+		t.Fatalf("second call: headers %v, body %s; want the cached answer", rr.Header(), rr.Body)
+	}
+	rec := a.lastRecord(t)
+	if rec["cache_hit"] != true || rec["cost_usd"] != float64(0) || rec["prompt_tokens"] != float64(0) ||
+		math.Abs(rec["saved_usd"].(float64)-0.00002) > 1e-12 {
+		t.Errorf("record = %v; want cache_hit, no cost, saved_usd 0.00002", rec)
+	}
+
+	other := a.call("POST", "/v1/chat/completions", limitedKey, `{"model":"other","messages":[{"role":"user","content":"hi"}],"temperature":0}`)
+	if other.Header().Get("X-Gateway-Cache") != "miss" {
+		t.Error("another key or alias must not share cache entries")
+	}
+	if rr := a.call("POST", "/v1/chat/completions", devKey, body("0.5")); rr.Header().Get("X-Gateway-Cache") != "" {
+		t.Error("temperature 0.5 must not use the cache")
+	}
+	stream := a.call("POST", "/v1/chat/completions", devKey,
+		`{"model":"fast","messages":[{"role":"user","content":"hi"}],"temperature":0,"stream":true}`)
+	if stream.Header().Get("X-Gateway-Cache") != "" {
+		t.Error("streaming requests must not use the cache")
 	}
 }
 

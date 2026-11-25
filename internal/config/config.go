@@ -35,6 +35,15 @@ type Config struct {
 	Reliability Reliability         `yaml:"reliability"`
 	Limits      Limits              `yaml:"limits"`
 	Policies    map[string]Policy   `yaml:"policies"` // limit policies; each key names one
+	Cache       Cache               `yaml:"cache"`
+}
+
+// Cache configures the exact-match response cache. It is off by default,
+// because it keeps answer text in memory.
+type Cache struct {
+	Enabled    bool          `yaml:"enabled"`
+	TTL        time.Duration `yaml:"ttl"`         // how long an answer is served from the cache
+	MaxEntries int           `yaml:"max_entries"` // the oldest-used answers go first when full
 }
 
 // Where Limits.OnStoreError can point.
@@ -192,6 +201,12 @@ func (c *Config) setDefaults() {
 	if c.Limits.OnStoreError == "" {
 		c.Limits.OnStoreError = FailOpen
 	}
+	if c.Cache.TTL == 0 {
+		c.Cache.TTL = 5 * time.Minute
+	}
+	if c.Cache.MaxEntries == 0 {
+		c.Cache.MaxEntries = 1000
+	}
 }
 
 // validate returns every problem it finds, sorted, so one run shows them all.
@@ -215,6 +230,9 @@ func (c *Config) validate() []string {
 	}
 	if s := c.Limits.OnStoreError; s != FailOpen && s != FailClosed {
 		add("limits: on_store_error must be %s or %s, not %q", FailOpen, FailClosed, s)
+	}
+	if c.Cache.TTL < 0 || c.Cache.MaxEntries < 0 {
+		add("cache: ttl and max_entries must not be negative")
 	}
 	for name, p := range c.Policies {
 		if p.RequestsPerMinute < 0 || p.TokensPerMinute < 0 || p.DailyUSD < 0 || p.MonthlyUSD < 0 {

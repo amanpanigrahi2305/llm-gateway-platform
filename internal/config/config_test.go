@@ -54,6 +54,9 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	if c.Limits.OnStoreError != FailOpen || c.Policies["default"].RequestsPerMinute != 60 {
 		t.Errorf("limits = %+v, policies = %+v", c.Limits, c.Policies)
 	}
+	if c.Cache.Enabled || c.Cache.TTL != 5*time.Minute || c.Cache.MaxEntries != 1000 {
+		t.Errorf("cache = %+v; want off by default, 5m, 1000", c.Cache)
+	}
 	if r := c.Reliability; r.MaxAttempts != 2 || r.BackoffBase != 100*time.Millisecond || r.BackoffMax != 2*time.Second ||
 		r.BreakerFailures != 5 || r.BreakerCooldown != 30*time.Second {
 		t.Errorf("reliability = %+v, want defaults 2, 100ms, 2s, 5, 30s", r)

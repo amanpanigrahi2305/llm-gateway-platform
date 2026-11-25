@@ -71,6 +71,13 @@ policies:
     daily_usd: 5
     monthly_usd: 50
 
+# Response cache. OFF by default: it keeps answer text in memory (never on disk).
+# Only non-streaming requests with temperature 0 are cached, separately per key.
+cache:
+  enabled: false
+  ttl: 5m
+  max_entries: 1000
+
 # Client keys. Run `gateway gen-key`, give the key to the client, paste the hash here.
 keys:
   - id: dev
