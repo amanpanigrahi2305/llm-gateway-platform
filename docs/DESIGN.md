@@ -21,8 +21,8 @@ What this project does differently:
   postmortem and automatic canary rollback, with the raw evidence in `docs/evidence/`.
 - **Privacy by default.** The gateway never stores prompt or response text.
   Only metadata is logged, and a test fails if prompt text reaches the log.
-- **Small Go codebase.** One static binary with two direct dependencies,
-  meant to be read end to end.
+- **Small Go codebase.** One static binary with four direct dependencies
+  (YAML, the Anthropic SDK, Redis and Postgres clients), meant to be read end to end.
 - **A $0 path.** A mock provider and Ollama on a laptop, the same Helm chart
   on any Kubernetes cluster, and Terraform for AWS.
 
@@ -134,7 +134,156 @@ chunks and `[DONE]`; `/readyz` returned 503 during the drain; the process exited
 2.6 s after SIGTERM (`docs/evidence/phase1-smoke.md`, section 11).
 
 ## Phase 2 — Reliability and cost control
-_TBD_
+
+Evidence for every number below: `docs/evidence/phase2-smoke.md`.
+
+### Retries and failover
+**Decision:** the router tries the alias's targets in order. Each error is put
+in one of three groups:
+- **Temporary** (408, 429, 5xx, timeout, connection error): retry the same
+  target, then fail over to the next one. Default: 2 tries per target.
+- **Broken target** (401, 403, 404): the gateway's key or model name is wrong
+  for this provider. A retry would fail the same way, so fail over at once.
+- **Client error** (400, 413, 422 and other 4xx): the request itself is wrong.
+  Every provider would reject it, so the client gets the error at once.
+
+The wait between tries is random between 0 and 100 ms × 2^(n-1), capped at 2 s
+("full jitter"). Without the random part, all requests that failed together
+would retry together and hit a recovering provider at the same moment.
+**Options:** retry only, with no failover; fail over only, with no retry; a
+retry library.
+**Why:** a short blip is often gone on the next try; a real outage needs another
+provider. The rules are 60 lines of code.
+**Trade-off:** a failed try adds latency. Measured (`latency_ms`): the first
+failover requests took 263–325 ms; once the breaker was open, 254–267 ms, the
+same as a healthy request (269 ms).
+
+### Never retry a stream after its first chunk
+**Decision:** a streaming request may be retried or failed over only before the
+first chunk reaches the client. After that, an error ends the stream (an error
+event and no `[DONE]`).
+**Why:** the client has already shown part of an answer. A retry produces a new,
+different answer from the start. The gateway cannot join the two, and sending
+both would give the user broken text. The client knows what it has shown, so
+only the client can decide to retry.
+**Trade-off:** a provider that fails in the middle of a stream is not hidden from
+the client.
+
+### Circuit breaker per provider
+**Decision:** each provider has a breaker. It opens after 5 failures in a row
+(temporary errors only). While open, requests skip the provider and fail over
+at once. After a 30 s cool-down it lets **one** probe request through
+(half-open): success closes it, failure opens it again for a new cool-down.
+When every target's breaker is open, the client gets 503 `providers_unavailable`
+at once.
+**Options:** failure rate over a time window; no breaker (retries only).
+**Why:** without a breaker, every request first waits for the dead provider to
+fail (or time out) before it fails over. "N failures in a row" is easy to
+explain and to test. One probe means a sick provider gets one request, not a
+flood, while it recovers.
+**What counts:** 5xx, 429, timeouts and connection errors are failures. A 400 is
+the client's fault and counts as a success: the provider answered. A client that
+disconnects counts as neither.
+**Trade-off:** a provider that fails every other request never trips a
+"N in a row" breaker; a rate-based breaker would catch that.
+**Measured:** with mock-a down, the breaker opened during the 3rd request. From
+then on, each request needed 1 attempt instead of 3. After the outage ended, the
+probe closed it again. With both mocks down: 502 three times, then 503 in 2 ms.
+
+### Three timeouts per provider
+**Decision:** connect (5 s, TCP + TLS), time to first token for streams (30 s)
+and total (5 min). The first-token timer is in the router, not in each adapter,
+so it works the same for every provider. When it fires, the try counts as a
+timeout: it is retried or failed over, and if nothing works the client gets 504.
+**Why:** a provider that accepts the connection and then sends nothing is the
+worst case. Without a first-token limit, the client waits the full 5 minutes.
+**Trade-off:** models that think before they answer send their first text token
+late. Set `ttft_timeout` above their thinking time, or real answers get cut off.
+**Measured:** with mock-a's first token at 3 s and `ttft_timeout: 1s`, the stream
+was served by mock-b after 2.14 s (two 1 s tries, then mock-b).
+
+### Rate limits live in Redis
+**Decision:** per-key requests/minute and tokens/minute counters are kept in
+Redis, shared by all replicas.
+**Why not in memory:** with N replicas behind a load balancer, each replica
+would count only its own share of the traffic. A key with a limit of 60/min
+could then send 60 × N per minute. Redis gives every replica the same count.
+**How:** fixed windows (one counter per key per UTC minute). The request counter
+is `INCR` then compare, inside `MULTI/EXEC` with `EXPIRE … NX`, so two replicas
+can never both let through the "last" request. Tokens are only known after the
+answer, so they are added afterwards, and the check uses what is already used.
+**Trade-off:** a fixed window lets a client send its full limit at the end of one
+minute and again at the start of the next (up to 2× in a short burst). A sliding
+window or token bucket is smoother but needs more Redis work per request. One
+request can overshoot the token limit; the next one is refused.
+**Measured:** a key with 5 requests/minute got 5 × 200, then 429 with
+`Retry-After: 33` (seconds to the next minute).
+
+### Budgets
+**Decision:** daily and monthly USD per key, also Redis counters (UTC day, UTC
+month). Money is counted in whole nano-dollars (1e-9 USD), because Redis counts
+integers and integers do not drift like floats. When a budget is used up, the
+client gets 429 `budget_exceeded` with a clear message and `Retry-After` until
+the reset.
+**Trade-off:** like tokens, cost is known only after the answer, so the last
+request can go over the budget; the next one is refused. Redis is the counter,
+the Postgres ledger is the record: if Redis loses its data, budgets restart from
+zero (rebuilding them from the ledger is not done).
+**Measured:** a key with $0.0001/day: 3 requests at $0.000046 each, then 429
+`budget_exceeded`.
+
+### When Redis is down: fail open by default
+**Decision:** `limits.on_store_error` is `fail_open` (default) or `fail_closed`.
+Fail open lets requests through without limits; fail closed refuses them with
+503 `limit_store_unavailable`. Redis calls have 200 ms timeouts and no retries, so
+a dead Redis is noticed in milliseconds. The outage is logged once when it
+starts and once when it ends, not once per request.
+**Why fail open:** the gateway exists to keep AI features running. A Redis outage
+should not turn into an outage of every app behind the gateway. The risk is
+bounded: spend can go over budget only for as long as Redis is down, and Phase 5
+adds an alert (`LimitStoreDown`).
+**When to choose fail closed:** when a hard spend cap matters more than uptime,
+for example a free tier open to the public.
+**Measured:** with Redis stopped, fail open gave 200 in 239–241 ms (250 ms with
+Redis up), so no added latency; the 200 ms Redis timeout is the upper bound.
+Fail closed gave 503 in 4 ms. Both recovered on their own when Redis came back.
+
+### Response cache (simple, off by default)
+**Decision:** exact-match cache in each replica's memory (LRU with a TTL). It is
+**off by default**, because it keeps answer text, and this project stores no
+prompt or answer text by default. Safety rules: only non-streaming requests with
+`temperature: 0`; the key is a SHA-256 of the client key ID, alias and request,
+so one key never gets another key's answer and prompts are not stored.
+**Why temperature 0 only:** with a higher temperature the client wants a new
+answer each time. Serving a stored one would silently change what they asked for.
+**Options:** a shared cache in Redis (more hits across replicas, but answer text
+would sit in Redis).
+**Trade-off:** each replica has its own cache, so more replicas mean fewer hits.
+Unlike rate limits, that is fine: a miss only costs money, it is never wrong.
+**Measured:** a repeated temperature-0 request: 238 ms (miss), then 2 ms (hit),
+with `saved_usd` = $0.000046 in the record.
+
+### Usage ledger in Postgres, written in the background
+**Decision:** every usage record also goes to the `usage_records` table
+(metadata only). A request never waits for the database: it puts the record in
+a buffered channel (10,000 records) and one worker writes batches with `COPY`
+(every 500 rows or every second). When the buffer is full, records are dropped
+and counted, never blocked on. Shutdown writes what is left.
+**Options:** insert inside the request (simple, but a slow database slows every
+request); a message queue such as Kafka (durable, but one more system to run).
+**Why:** serving requests matters more than the ledger, and the JSON log still has
+every record. The table is created on the first write under a Postgres advisory
+lock, so replicas that start together do not race, and the gateway starts even
+while Postgres is down.
+**Trade-off:** records in the buffer are lost if the process is killed hard
+(`SIGKILL`). A graceful stop writes them.
+**Measured:** 3,839 records in the log and 3,839 rows in the table, 0 dropped,
+0 failed. The prompt text was found 0 times in the log and in a dump of the table.
+
+### Failover under load
+**Measured** (k6, 20 virtual users, 20 s, mock-a outage from second 5 to second
+15): 3,796 requests, **0 failed**, p95 109 ms, max 200 ms. mock-a served 1,861
+and mock-b 1,935. Laptop: AMD Ryzen AI 9 HX PRO 375, WSL2.
 
 ## Phase 3 — Containers + Kubernetes
 _TBD_
