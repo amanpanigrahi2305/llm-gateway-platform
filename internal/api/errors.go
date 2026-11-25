@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
 
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 )
@@ -39,6 +42,22 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, e apiError) {
 	writeJSON(w, e.Status, map[string]any{"error": e.body()})
+}
+
+// writeLimitError answers a refused request: 429 with Retry-After for a rate
+// limit or budget, 503 when the limit store is down and the rule is fail-closed.
+// It returns the status it wrote.
+func writeLimitError(w http.ResponseWriter, d limits.Decision) int {
+	w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(d.RetryAfter.Seconds())))))
+	e := apiError{http.StatusTooManyRequests, "rate_limit_error", "rate_limit_exceeded", d.Message}
+	switch d.Reason {
+	case limits.ReasonDaily, limits.ReasonMonthly:
+		e.Code = "budget_exceeded"
+	case limits.ReasonStoreDown:
+		e = apiError{http.StatusServiceUnavailable, "api_error", "limit_store_unavailable", d.Message}
+	}
+	writeError(w, e)
+	return e.Status
 }
 
 // upstreamError turns a provider error into the error the client sees, plus a

@@ -54,6 +54,23 @@ prices:
   "ollama/qwen2.5:0.5b": {input_per_million: 0, output_per_million: 0}
   # "anthropic/claude-opus-5-5": {input_per_million: 4.00, output_per_million: 20.00}
 
+# Where rate-limit and budget counters live. With more than one gateway replica
+# they MUST be in Redis: in-memory counters let each replica allow the full limit.
+limits:
+  redis_url_env: GATEWAY_REDIS_URL   # env var with the URL, e.g. redis://localhost:6380/0
+                                     # remove this line for in-memory counters (one replica only)
+  on_store_error: fail_open          # Redis down: fail_open lets requests through,
+                                     # fail_closed refuses them with 503
+
+# Limit policies. Each key names one. 0 means no limit. Windows are UTC.
+# A hit limit returns 429 with Retry-After.
+policies:
+  default:
+    requests_per_minute: 60
+    tokens_per_minute: 100000
+    daily_usd: 5
+    monthly_usd: 50
+
 # Client keys. Run `gateway gen-key`, give the key to the client, paste the hash here.
 keys:
   - id: dev
@@ -61,4 +78,4 @@ keys:
     team: platform
     hash: "replace-with-the-hash-from-gateway-gen-key"
     aliases: ["*"]
-    policy: default   # limit policy name; enforced from Phase 2
+    policy: default

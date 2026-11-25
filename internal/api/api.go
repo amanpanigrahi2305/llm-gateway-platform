@@ -9,26 +9,43 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
 )
 
-// Server holds the API's dependencies.
+// Deps are what the API server needs.
+type Deps struct {
+	Router  *router.Router
+	Keys    *auth.Store
+	Prices  usage.PriceTable
+	Limiter *limits.Limiter // nil means no rate limits or budgets
+	Log     *slog.Logger
+}
+
+// Server serves the API.
 type Server struct {
-	router *router.Router
-	keys   *auth.Store
-	prices usage.PriceTable
-	log    *slog.Logger
-	ready  atomic.Bool
+	router  *router.Router
+	keys    *auth.Store
+	prices  usage.PriceTable
+	limiter *limits.Limiter
+	log     *slog.Logger
+	ready   atomic.Bool
+	bg      sync.WaitGroup // work that runs after the response, such as usage counting
 }
 
 // New returns an API server. It reports not-ready until SetReady(true).
-func New(r *router.Router, keys *auth.Store, prices usage.PriceTable, log *slog.Logger) *Server {
-	return &Server{router: r, keys: keys, prices: prices, log: log}
+func New(d Deps) *Server {
+	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, log: d.Log}
 }
+
+// Wait blocks until background work started by requests is done. The
+// gateway calls it at shutdown, after the HTTP server has stopped.
+func (s *Server) Wait() { s.bg.Wait() }
 
 // SetReady sets what /readyz reports. At shutdown the gateway sets it to false,
 // so the load balancer stops sending new requests before the process exits.

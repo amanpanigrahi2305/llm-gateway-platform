@@ -22,6 +22,7 @@ import (
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/api"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/config"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
@@ -112,7 +113,19 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	apiServer := api.New(rt, auth.NewStore(cfg.Keys), usage.PriceTable(cfg.Prices), log)
+	limiter, closeStore, err := newLimiter(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+
+	apiServer := api.New(api.Deps{
+		Router:  rt,
+		Keys:    auth.NewStore(cfg.Keys),
+		Prices:  usage.PriceTable(cfg.Prices),
+		Limiter: limiter,
+		Log:     log,
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -149,12 +162,41 @@ func shutdown(srv *http.Server, apiServer *api.Server, sc config.Server, log *sl
 
 	ctx, cancel := context.WithTimeout(context.Background(), sc.ShutdownTimeout)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	var err error
+	if err = srv.Shutdown(ctx); err != nil {
 		log.Warn("shutdown timeout reached; closing open connections", "error", err.Error())
-		return srv.Close()
+		err = srv.Close()
 	}
+	apiServer.Wait() // finish background work, such as usage counting
 	log.Info("shutdown complete")
-	return nil
+	return err
+}
+
+// newLimiter builds the rate limiter. Counters live in Redis when
+// limits.redis_url_env is set, otherwise in memory (correct for one replica only).
+func newLimiter(cfg *config.Config, log *slog.Logger) (*limits.Limiter, func(), error) {
+	failOpen := cfg.Limits.OnStoreError == config.FailOpen
+	env := cfg.Limits.RedisURLEnv
+	if env == "" {
+		log.Warn("rate limits and budgets use in-memory counters; this is correct only with one gateway replica")
+		return limits.New(limits.NewMemoryStore(), cfg.Policies, failOpen, log), func() {}, nil
+	}
+	url := os.Getenv(env)
+	if url == "" {
+		return nil, nil, fmt.Errorf("limits: environment variable %s is empty", env)
+	}
+	store, err := limits.NewRedisStore(url)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := store.Ping(ctx); err != nil {
+		// Start anyway. A gateway that exits whenever Redis blips would
+		// crash-loop on Kubernetes; the on_store_error rule covers the gap.
+		log.Warn("redis is not reachable at startup", "on_store_error", cfg.Limits.OnStoreError, "error", err.Error())
+	}
+	return limits.New(store, cfg.Policies, failOpen, log), func() { _ = store.Close() }, nil
 }
 
 func envOr(name, fallback string) string {

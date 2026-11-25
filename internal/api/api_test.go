@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"math"
 	"net/http"
@@ -12,9 +13,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/config"
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/limits"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
@@ -23,6 +26,8 @@ import (
 const (
 	devKey     = "sk-gw-dev"
 	limitedKey = "sk-gw-limited"
+	tightKey   = "sk-gw-tight"  // 2 requests per minute
+	budgetKey  = "sk-gw-budget" // $0.00003 per day
 )
 
 // fakeProvider returns canned answers and records the request it got.
@@ -65,6 +70,11 @@ type testAPI struct {
 
 func newTestAPI(t *testing.T, fp *fakeProvider) testAPI {
 	t.Helper()
+	return newTestAPIWithStore(t, fp, limits.NewMemoryStore(), true)
+}
+
+func newTestAPIWithStore(t *testing.T, fp *fakeProvider, store limits.Store, failOpen bool) testAPI {
+	t.Helper()
 	rt, err := router.New(
 		map[string][]string{"fast": {"fake/model-x"}, "other": {"fake/model-y"}},
 		map[string]providers.Provider{"fake": fp},
@@ -74,15 +84,23 @@ func newTestAPI(t *testing.T, fp *fakeProvider) testAPI {
 		t.Fatal(err)
 	}
 	keys := auth.NewStore([]config.Key{
-		{ID: "dev", Hash: auth.Hash(devKey), Owner: "aman", Team: "platform", Aliases: []string{"*"}},
-		{ID: "limited", Hash: auth.Hash(limitedKey), Aliases: []string{"other"}},
+		{ID: "dev", Hash: auth.Hash(devKey), Owner: "aman", Team: "platform", Aliases: []string{"*"}, Policy: "default"},
+		{ID: "limited", Hash: auth.Hash(limitedKey), Aliases: []string{"other"}, Policy: "default"},
+		{ID: "tight", Hash: auth.Hash(tightKey), Aliases: []string{"*"}, Policy: "tight"},
+		{ID: "budget", Hash: auth.Hash(budgetKey), Aliases: []string{"*"}, Policy: "budget"},
 	})
+	policies := map[string]config.Policy{
+		"default": {},
+		"tight":   {RequestsPerMinute: 2},
+		"budget":  {DailyUSD: 0.00003},
+	}
 	prices := usage.PriceTable{
 		"fake/model-x": {InputPerMillion: 1, OutputPerMillion: 2},
 		"fake/model-y": {InputPerMillion: 0, OutputPerMillion: 0},
 	}
 	var logs bytes.Buffer
-	srv := New(rt, keys, prices, slog.New(slog.NewJSONHandler(&logs, nil)))
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	srv := New(Deps{Router: rt, Keys: keys, Prices: prices, Limiter: limits.New(store, policies, failOpen, log), Log: log})
 	srv.SetReady(true)
 	return testAPI{srv: srv, h: srv.Handler(), logs: &logs}
 }
@@ -377,6 +395,74 @@ func TestModelsFilteredByKey(t *testing.T) {
 	}
 	if rr := a.call("GET", "/v1/models", "", ""); rr.Code != 401 {
 		t.Errorf("no key: status %d, want 401", rr.Code)
+	}
+}
+
+const hiBody = `{"model":"fast","messages":[{"role":"user","content":"hi"}]}`
+
+func TestRateLimitReturns429(t *testing.T) {
+	a := newTestAPI(t, &fakeProvider{resp: &providers.ChatResponse{Content: "ok"}})
+	for i := range 2 {
+		if rr := a.call("POST", "/v1/chat/completions", tightKey, hiBody); rr.Code != 200 {
+			t.Fatalf("request %d: status %d", i+1, rr.Code)
+		}
+	}
+	rr := a.call("POST", "/v1/chat/completions", tightKey, hiBody)
+	if rr.Code != 429 || get(decodeJSON(t, rr.Body.String()), "error", "code") != "rate_limit_exceeded" {
+		t.Fatalf("3rd request: status %d, body %s; want 429 rate_limit_exceeded", rr.Code, rr.Body)
+	}
+	if ra := rr.Header().Get("Retry-After"); ra == "" || ra == "0" {
+		t.Errorf("Retry-After = %q, want seconds until the next minute", ra)
+	}
+	if rec := a.lastRecord(t); rec["status"] != float64(429) || rec["error_type"] != "requests_per_minute" {
+		t.Errorf("record = %v", rec)
+	}
+	if rr := a.call("POST", "/v1/chat/completions", devKey, hiBody); rr.Code != 200 {
+		t.Errorf("another key got status %d; limits are per key", rr.Code)
+	}
+}
+
+func TestBudgetBlocksKey(t *testing.T) {
+	// Each answer costs $0.00002 (10 input tokens at $1/1M + 5 output at $2/1M).
+	fp := &fakeProvider{resp: &providers.ChatResponse{Content: "ok", Usage: &providers.Usage{PromptTokens: 10, CompletionTokens: 5}}}
+	a := newTestAPI(t, fp)
+	for i := range 2 { // $0 then $0.00002 spent: both under the $0.00003 budget
+		if rr := a.call("POST", "/v1/chat/completions", budgetKey, hiBody); rr.Code != 200 {
+			t.Fatalf("request %d: status %d", i+1, rr.Code)
+		}
+		a.srv.Wait() // usage is counted in the background
+	}
+	rr := a.call("POST", "/v1/chat/completions", budgetKey, hiBody) // $0.00004 spent
+	body := decodeJSON(t, rr.Body.String())
+	if rr.Code != 429 || get(body, "error", "code") != "budget_exceeded" || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("status %d, body %s; want 429 budget_exceeded with Retry-After", rr.Code, rr.Body)
+	}
+	if msg, _ := get(body, "error", "message").(string); !strings.Contains(msg, "daily budget") {
+		t.Errorf("message = %q; want a clear reason", msg)
+	}
+}
+
+// downStore fails every call, like Redis when it is down.
+type downStore struct{}
+
+func (downStore) IncrBy(context.Context, string, int64, time.Duration) (int64, error) {
+	return 0, errors.New("connection refused")
+}
+
+func (downStore) Get(context.Context, ...string) ([]int64, error) {
+	return nil, errors.New("connection refused")
+}
+
+func TestLimitStoreDown(t *testing.T) {
+	ok := &fakeProvider{resp: &providers.ChatResponse{Content: "ok"}}
+	open := newTestAPIWithStore(t, ok, downStore{}, true)
+	if rr := open.call("POST", "/v1/chat/completions", tightKey, hiBody); rr.Code != 200 {
+		t.Errorf("fail-open: status %d, want 200", rr.Code)
+	}
+	closed := newTestAPIWithStore(t, ok, downStore{}, false)
+	rr := closed.call("POST", "/v1/chat/completions", tightKey, hiBody)
+	if rr.Code != 503 || get(decodeJSON(t, rr.Body.String()), "error", "code") != "limit_store_unavailable" {
+		t.Errorf("fail-closed: status %d, body %s; want 503 limit_store_unavailable", rr.Code, rr.Body)
 	}
 }
 

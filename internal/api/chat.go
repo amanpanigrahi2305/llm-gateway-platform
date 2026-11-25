@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/auth"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/providers"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/router"
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
@@ -172,6 +173,13 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("this API key may not use model %q", req.Model)})
 		return
 	}
+	if s.limiter != nil {
+		if d := s.limiter.Admit(r.Context(), key.ID, key.Policy); !d.Allowed {
+			rec.Status, rec.ErrorType = writeLimitError(w, d), d.Reason
+			return
+		}
+		defer s.countUsage(key, &rec)
+	}
 
 	promptChars := 0
 	for _, m := range preq.Messages {
@@ -307,6 +315,20 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, req chatRequest,
 	if writeFailed {
 		rec.Status, rec.ErrorType = statusClientClosed, "client_closed"
 	}
+}
+
+// countUsage adds the request's tokens and cost to the key's limits. It runs
+// in the background, so a slow or down limit store never delays the answer.
+func (s *Server) countUsage(key *auth.Key, rec *usage.Record) {
+	tokens, cost := rec.PromptTokens+rec.CompletionTokens, rec.CostUSD
+	if tokens == 0 && cost == 0 {
+		return
+	}
+	s.bg.Go(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		s.limiter.Record(ctx, key.ID, key.Policy, tokens, cost)
+	})
 }
 
 // setOutcome records which target served the request and how many tries it took.
