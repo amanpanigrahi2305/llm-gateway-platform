@@ -36,6 +36,16 @@ type Config struct {
 	Limits      Limits              `yaml:"limits"`
 	Policies    map[string]Policy   `yaml:"policies"` // limit policies; each key names one
 	Cache       Cache               `yaml:"cache"`
+	Ledger      Ledger              `yaml:"ledger"`
+}
+
+// Ledger configures the Postgres usage ledger: one row per request,
+// written in the background. It is off when database_url_env is empty.
+type Ledger struct {
+	DatabaseURLEnv string        `yaml:"database_url_env"` // env var with the Postgres URL (it holds a password)
+	BufferSize     int           `yaml:"buffer_size"`      // records waiting to be written; when full, new ones are dropped
+	BatchSize      int           `yaml:"batch_size"`       // rows per write
+	FlushInterval  time.Duration `yaml:"flush_interval"`   // longest wait before a partial batch is written
 }
 
 // Cache configures the exact-match response cache. It is off by default,
@@ -207,6 +217,15 @@ func (c *Config) setDefaults() {
 	if c.Cache.MaxEntries == 0 {
 		c.Cache.MaxEntries = 1000
 	}
+	if c.Ledger.BufferSize == 0 {
+		c.Ledger.BufferSize = 10_000
+	}
+	if c.Ledger.BatchSize == 0 {
+		c.Ledger.BatchSize = 500
+	}
+	if c.Ledger.FlushInterval == 0 {
+		c.Ledger.FlushInterval = time.Second
+	}
 }
 
 // validate returns every problem it finds, sorted, so one run shows them all.
@@ -233,6 +252,9 @@ func (c *Config) validate() []string {
 	}
 	if c.Cache.TTL < 0 || c.Cache.MaxEntries < 0 {
 		add("cache: ttl and max_entries must not be negative")
+	}
+	if l := c.Ledger; l.BufferSize < 0 || l.BatchSize < 0 || l.FlushInterval < 0 {
+		add("ledger: buffer_size, batch_size and flush_interval must not be negative")
 	}
 	for name, p := range c.Policies {
 		if p.RequestsPerMinute < 0 || p.TokensPerMinute < 0 || p.DailyUSD < 0 || p.MonthlyUSD < 0 {

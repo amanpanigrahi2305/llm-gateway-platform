@@ -26,6 +26,7 @@ type Deps struct {
 	Prices  usage.PriceTable
 	Limiter *limits.Limiter // nil means no rate limits or budgets
 	Cache   *cache.Cache    // nil means no response cache
+	Ledger  *usage.Ledger   // nil means usage records go only to the log
 	Log     *slog.Logger
 }
 
@@ -36,6 +37,7 @@ type Server struct {
 	prices  usage.PriceTable
 	limiter *limits.Limiter
 	cache   *cache.Cache
+	ledger  *usage.Ledger
 	log     *slog.Logger
 	ready   atomic.Bool
 	bg      sync.WaitGroup // work that runs after the response, such as usage counting
@@ -43,7 +45,8 @@ type Server struct {
 
 // New returns an API server. It reports not-ready until SetReady(true).
 func New(d Deps) *Server {
-	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, cache: d.Cache, log: d.Log}
+	return &Server{router: d.Router, keys: d.Keys, prices: d.Prices, limiter: d.Limiter, cache: d.Cache,
+		ledger: d.Ledger, log: d.Log}
 }
 
 // Wait blocks until background work started by requests is done. The
@@ -115,8 +118,12 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*auth.Key
 	return key, true
 }
 
+// logRecord writes the usage record to the log and queues it for the ledger.
 func (s *Server) logRecord(rec usage.Record) {
 	s.log.LogAttrs(context.Background(), slog.LevelInfo, "request", rec.Attrs()...)
+	if s.ledger != nil {
+		s.ledger.Write(rec) // never blocks
+	}
 }
 
 func newRequestID() string {

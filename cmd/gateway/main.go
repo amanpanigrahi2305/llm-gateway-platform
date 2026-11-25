@@ -119,6 +119,11 @@ func serve(args []string) error {
 		return err
 	}
 	defer closeStore()
+	ledger, closeLedger, err := newLedger(cfg, log)
+	if err != nil {
+		return err
+	}
+	defer closeLedger() // runs after shutdown(), so the last records are written
 
 	var responseCache *cache.Cache
 	if cfg.Cache.Enabled {
@@ -132,6 +137,7 @@ func serve(args []string) error {
 		Prices:  usage.PriceTable(cfg.Prices),
 		Limiter: limiter,
 		Cache:   responseCache,
+		Ledger:  ledger,
 		Log:     log,
 	})
 
@@ -205,6 +211,43 @@ func newLimiter(cfg *config.Config, log *slog.Logger) (*limits.Limiter, func(), 
 		log.Warn("redis is not reachable at startup", "on_store_error", cfg.Limits.OnStoreError, "error", err.Error())
 	}
 	return limits.New(store, cfg.Policies, failOpen, log), func() { _ = store.Close() }, nil
+}
+
+// newLedger starts the Postgres usage ledger when ledger.database_url_env is
+// set. The returned function writes what is left and closes the pool.
+func newLedger(cfg *config.Config, log *slog.Logger) (*usage.Ledger, func(), error) {
+	env := cfg.Ledger.DatabaseURLEnv
+	if env == "" {
+		log.Info("usage ledger is off; usage records go to the log only")
+		return nil, func() {}, nil
+	}
+	url := os.Getenv(env)
+	if url == "" {
+		return nil, nil, fmt.Errorf("ledger: environment variable %s is empty", env)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	db, err := usage.NewPostgres(ctx, url)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ledger: %w", err)
+	}
+	if err := db.Ping(ctx); err != nil {
+		// Start anyway: the ledger is not on the request path.
+		log.Warn("postgres is not reachable at startup; ledger records fail until it is back", "error", err.Error())
+	}
+	lc := cfg.Ledger
+	l := usage.NewLedger(db, usage.LedgerOptions{BufferSize: lc.BufferSize, BatchSize: lc.BatchSize,
+		FlushInterval: lc.FlushInterval}, log)
+	return l, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := l.Close(ctx); err != nil {
+			log.Warn("usage ledger did not finish writing in time", "error", err.Error())
+		}
+		s := l.Stats()
+		log.Info("usage ledger closed", "written", s.Written, "dropped", s.Dropped, "failed", s.Failed)
+		db.Close()
+	}, nil
 }
 
 func envOr(name, fallback string) string {

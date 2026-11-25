@@ -26,17 +26,23 @@ clean: ## remove build output
 test: ## unit tests with the race detector
 	go test -race -count=1 ./...
 
-test-integration: ## tests against the local Redis from dev-up (database 15)
-	GATEWAY_TEST_REDIS_URL=redis://localhost:6380/15 go test -race -count=1 -run Redis -v ./internal/limits/
+test-integration: ## tests against the local Redis and Postgres from dev-up
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	GATEWAY_TEST_REDIS_URL=redis://localhost:6380/15 GATEWAY_TEST_DATABASE_URL="$$GATEWAY_DATABASE_URL" \
+	go test -race -count=1 -run 'Redis|Postgres' -v ./internal/limits/ ./internal/usage/
 
 # Local services for development, in Docker. Ports are bound to 127.0.0.1 only,
-# so nobody else on the network can reach these password-less services.
-# Host port 6380 (not 6379) avoids a clash with a Redis already on the laptop.
-dev-up: ## start the local Redis
+# so nobody else on the network can reach them. Host ports 6380 and 5433 avoid
+# clashes with a Redis or Postgres already on the laptop.
+dev-up: ## start the local Redis and Postgres (Postgres password from .env)
 	docker start llm-gw-redis 2>/dev/null || docker run -d --name llm-gw-redis -p 127.0.0.1:6380:6379 redis:8-alpine
+	set -a; [ -f .env ] && . ./.env; set +a; \
+	[ -n "$$GATEWAY_DB_PASSWORD" ] || { echo "set GATEWAY_DB_PASSWORD in .env first"; exit 1; }; \
+	docker start llm-gw-postgres 2>/dev/null || docker run -d --name llm-gw-postgres -p 127.0.0.1:5433:5432 \
+	  -e POSTGRES_USER=gateway -e POSTGRES_DB=gateway -e POSTGRES_PASSWORD="$$GATEWAY_DB_PASSWORD" postgres:18-alpine
 
-dev-down: ## remove the local Redis
-	docker rm -f llm-gw-redis
+dev-down: ## remove the local Redis and Postgres (the ledger data goes too)
+	docker rm -f llm-gw-redis llm-gw-postgres
 
 lint: ## go vet + golangci-lint
 	go vet ./...

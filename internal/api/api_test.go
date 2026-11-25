@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -479,6 +481,41 @@ func TestCacheServesRepeatedTemperatureZeroRequest(t *testing.T) {
 		`{"model":"fast","messages":[{"role":"user","content":"hi"}],"temperature":0,"stream":true}`)
 	if stream.Header().Get("X-Gateway-Cache") != "" {
 		t.Error("streaming requests must not use the cache")
+	}
+}
+
+// ledgerSpy keeps the records the ledger writes.
+type ledgerSpy struct {
+	mu   sync.Mutex
+	recs []usage.Record
+}
+
+func (l *ledgerSpy) WriteBatch(_ context.Context, recs []usage.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.recs = append(l.recs, recs...)
+	return nil
+}
+
+func TestRequestsGoToTheLedger(t *testing.T) {
+	fp := &fakeProvider{resp: &providers.ChatResponse{Content: "secret answer", Usage: &providers.Usage{PromptTokens: 3, CompletionTokens: 2}}}
+	a := newTestAPI(t, fp)
+	spy := &ledgerSpy{}
+	a.srv.ledger = usage.NewLedger(spy, usage.LedgerOptions{BufferSize: 10, BatchSize: 10}, slog.New(slog.DiscardHandler))
+	a.call("POST", "/v1/chat/completions", devKey, `{"model":"fast","messages":[{"role":"user","content":"secret prompt"}]}`)
+	a.call("POST", "/v1/chat/completions", "", hiBody) // a 401 is recorded too
+	if err := a.srv.ledger.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(spy.recs) != 2 {
+		t.Fatalf("ledger got %d records, want 2", len(spy.recs))
+	}
+	r := spy.recs[0]
+	if r.KeyID != "dev" || r.Status != 200 || r.PromptTokens != 3 || r.Time.IsZero() || spy.recs[1].Status != 401 {
+		t.Errorf("records = %+v", spy.recs)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", spy.recs), "secret") {
+		t.Error("prompt or answer text reached the ledger")
 	}
 }
 

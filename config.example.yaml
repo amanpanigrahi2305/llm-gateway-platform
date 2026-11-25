@@ -71,6 +71,16 @@ policies:
     daily_usd: 5
     monthly_usd: 50
 
+# Usage ledger: one Postgres row per request (metadata only, never prompt or
+# answer text), written in the background in batches. A request never waits for
+# the database; if the buffer fills up, records are dropped and counted.
+# Remove database_url_env to turn the ledger off (records still go to the log).
+ledger:
+  database_url_env: GATEWAY_DATABASE_URL   # env var with the URL (it holds a password)
+  buffer_size: 10000
+  batch_size: 500
+  flush_interval: 1s
+
 # Response cache. OFF by default: it keeps answer text in memory (never on disk).
 # Only non-streaming requests with temperature 0 are cached, separately per key.
 cache:

@@ -140,7 +140,7 @@ func parseChat(w http.ResponseWriter, r *http.Request) (chatRequest, providers.C
 // exactly one usage record in the log: metadata only, never prompt or answer text.
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rec := usage.Record{RequestID: newRequestID()}
+	rec := usage.Record{Time: start, RequestID: newRequestID()}
 	w.Header().Set("X-Request-Id", rec.RequestID)
 	defer func() {
 		rec.LatencyMS = time.Since(start).Milliseconds()

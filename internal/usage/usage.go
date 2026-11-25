@@ -5,6 +5,7 @@ package usage
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/config"
 )
@@ -33,9 +34,10 @@ func EstimateTokens(chars int) int {
 	return (chars + 3) / 4
 }
 
-// Record is the metadata of one request. Phase 1 writes it to the JSON log.
-// Phase 2 also stores it in Postgres.
+// Record is the metadata of one request. It goes to the JSON log and, when
+// the ledger is on, to Postgres.
 type Record struct {
+	Time             time.Time // when the request started (the log line has its own time)
 	RequestID        string
 	KeyID            string
 	Owner            string
