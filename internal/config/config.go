@@ -27,11 +27,19 @@ const (
 
 // Config is the whole config file.
 type Config struct {
-	Server    Server              `yaml:"server"`
-	Providers map[string]Provider `yaml:"providers"`
-	Aliases   map[string][]string `yaml:"aliases"` // alias -> ordered "provider/model" targets
-	Prices    map[string]Price    `yaml:"prices"`  // "provider/model" -> price
-	Keys      []Key               `yaml:"keys"`
+	Server      Server              `yaml:"server"`
+	Providers   map[string]Provider `yaml:"providers"`
+	Aliases     map[string][]string `yaml:"aliases"` // alias -> ordered "provider/model" targets
+	Prices      map[string]Price    `yaml:"prices"`  // "provider/model" -> price
+	Keys        []Key               `yaml:"keys"`
+	Reliability Reliability         `yaml:"reliability"`
+}
+
+// Reliability holds the retry settings.
+type Reliability struct {
+	MaxAttempts int           `yaml:"max_attempts"` // tries per target, the first try included
+	BackoffBase time.Duration `yaml:"backoff_base"` // wait before the first retry; doubles on each retry
+	BackoffMax  time.Duration `yaml:"backoff_max"`  // longest wait between two tries
 }
 
 // Server holds the HTTP server settings.
@@ -130,6 +138,16 @@ func (c *Config) setDefaults() {
 			c.Keys[i].Policy = "default"
 		}
 	}
+	r := &c.Reliability
+	if r.MaxAttempts == 0 {
+		r.MaxAttempts = 2
+	}
+	if r.BackoffBase == 0 {
+		r.BackoffBase = 100 * time.Millisecond
+	}
+	if r.BackoffMax == 0 {
+		r.BackoffMax = 2 * time.Second
+	}
 }
 
 // validate returns every problem it finds, sorted, so one run shows them all.
@@ -141,6 +159,12 @@ func (c *Config) validate() []string {
 
 	if c.Server.ShutdownTimeout < 0 || c.Server.DrainDelay < 0 {
 		add("server: shutdown_timeout and drain_delay must not be negative")
+	}
+	if r := c.Reliability; r.MaxAttempts < 1 || r.MaxAttempts > 10 {
+		add("reliability: max_attempts must be between 1 and 10")
+	}
+	if r := c.Reliability; r.BackoffBase < 0 || r.BackoffMax < r.BackoffBase {
+		add("reliability: backoff_base must not be negative or larger than backoff_max")
 	}
 
 	if len(c.Providers) == 0 {

@@ -22,11 +22,19 @@ providers:
   #   api_key_env: OPENAI_API_KEY
 
 # Clients ask for an alias, never a raw model name. Each alias is an ordered list
-# of provider/model targets. Phase 1 uses the first target; Phase 2 adds failover.
+# of provider/model targets: the first healthy one serves, the rest are failover.
 aliases:
   fast: ["mock/mock-1"]
   local: ["ollama/qwen2.5:0.5b"]
   # smart: ["anthropic/claude-opus-5-5"]
+
+# Retries: temporary errors (408, 429, 5xx, timeouts, connection errors) are
+# retried on the same target, then the next target takes over. Client errors
+# (400, 413, 422) are never retried. A stream is never retried after its first chunk.
+reliability:
+  max_attempts: 2        # tries per target, the first try included
+  backoff_base: 100ms    # wait before the first retry (random 0..base, doubles each retry)
+  backoff_max: 2s        # longest wait between two tries
 
 # USD per 1M tokens. Every alias target needs a price (0 for local models), so a
 # paid model is never silently reported as $0. Check each provider's pricing page.

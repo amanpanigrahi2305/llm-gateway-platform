@@ -187,13 +187,13 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 // complete handles a normal (non-streaming) request.
 func (s *Server) complete(w http.ResponseWriter, r *http.Request, req chatRequest, preq providers.ChatRequest,
 	promptChars int, rec *usage.Record) {
-	resp, target, err := s.router.Chat(r.Context(), req.Model, preq)
-	s.setTarget(w, rec, target)
+	resp, out, err := s.router.Chat(r.Context(), req.Model, preq)
+	s.setOutcome(w, rec, out)
 	if err != nil {
 		s.fail(w, r, err, rec)
 		return
 	}
-	u := s.account(rec, target, resp.Usage, promptChars, utf8.RuneCountInString(resp.Content))
+	u := s.account(rec, out.Target, resp.Usage, promptChars, utf8.RuneCountInString(resp.Content))
 	finish := resp.FinishReason
 	if finish == "" {
 		finish = providers.FinishStop
@@ -253,7 +253,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, req chatRequest,
 		return sendData(chunk(delta{Role: "assistant"}, ""))
 	}
 
-	target, err := s.router.ChatStream(r.Context(), req.Model, preq, func(t router.Target, c providers.Chunk) error {
+	out, err := s.router.ChatStream(r.Context(), req.Model, preq, func(t router.Target, c providers.Chunk) error {
 		if !started {
 			if err := begin(t); err != nil {
 				return err
@@ -269,9 +269,10 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, req chatRequest,
 		return sendData(chunk(delta{Content: c.Content}, c.FinishReason))
 	})
 
+	target := out.Target
+	s.setOutcome(w, rec, out)
 	switch {
 	case err != nil && !started:
-		s.setTarget(w, rec, target)
 		s.fail(w, r, err, rec)
 		return
 	case err != nil:
@@ -306,6 +307,13 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request, req chatRequest,
 	if writeFailed {
 		rec.Status, rec.ErrorType = statusClientClosed, "client_closed"
 	}
+}
+
+// setOutcome records which target served the request and how many tries it took.
+// After a stream has started, the header part has no effect (headers are sent).
+func (s *Server) setOutcome(w http.ResponseWriter, rec *usage.Record, out router.Outcome) {
+	rec.Attempts, rec.Failovers = out.Attempts, out.Failovers
+	s.setTarget(w, rec, out.Target)
 }
 
 // setTarget records which provider served the request and shows it in headers.

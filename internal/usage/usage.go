@@ -52,6 +52,8 @@ type Record struct {
 	CompletionTokens int
 	Estimated        bool // true when tokens were estimated, not reported
 	CostUSD          float64
+	Attempts         int // upstream calls, retries included
+	Failovers        int // targets passed over (0 = the first target answered)
 }
 
 // Attrs returns the record as flat log fields.
@@ -73,5 +75,7 @@ func (r Record) Attrs() []slog.Attr {
 		slog.Int("completion_tokens", r.CompletionTokens),
 		slog.Bool("estimated", r.Estimated),
 		slog.Float64("cost_usd", r.CostUSD),
+		slog.Int("attempts", r.Attempts),
+		slog.Int("failovers", r.Failovers),
 	}
 }

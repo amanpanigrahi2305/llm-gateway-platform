@@ -68,6 +68,7 @@ func newTestAPI(t *testing.T, fp *fakeProvider) testAPI {
 	rt, err := router.New(
 		map[string][]string{"fast": {"fake/model-x"}, "other": {"fake/model-y"}},
 		map[string]providers.Provider{"fake": fp},
+		router.Options{}, // one try, no retries: retries are tested in the router package
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +172,7 @@ func TestChatCompletion(t *testing.T) {
 
 	rec := a.lastRecord(t)
 	if rec["status"] != float64(200) || rec["key_id"] != "dev" || rec["team"] != "platform" ||
-		rec["alias"] != "fast" || rec["estimated"] != false {
+		rec["alias"] != "fast" || rec["estimated"] != false || rec["attempts"] != float64(1) || rec["failovers"] != float64(0) {
 		t.Errorf("record = %v", rec)
 	}
 	// 10 input tokens at $1/1M + 5 output tokens at $2/1M = $0.00002
