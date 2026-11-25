@@ -7,9 +7,11 @@ MOCK_IMAGE ?= llm-gateway-mock
 TAG        ?= dev
 
 COMPOSE    := docker compose -f deploy/compose/compose.yaml --env-file .env
+KIND_NAME  := llm-gateway
+METRICS_SERVER_VERSION := v0.9.1
 
 .PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
-	docker-build docker-build-multiarch compose-up compose-down
+	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy kind-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -64,6 +66,31 @@ compose-up: ## start the laptop stack: gateway, Redis, Postgres, Ollama, 2 mocks
 
 compose-down: ## stop the laptop stack (data volumes are kept)
 	$(COMPOSE) down
+
+helm-lint: ## lint the chart with its defaults and with the kind values
+	helm lint deploy/helm/llm-gateway
+	helm lint deploy/helm/llm-gateway -f deploy/kind/values.yaml
+
+# metrics-server feeds CPU numbers to the HPA. kind's kubelets serve
+# self-signed certificates that no cluster CA signed, so metrics-server cannot
+# verify them; --kubelet-insecure-tls skips that check. Never use it on a real cluster.
+kind-up: ## create the local 3-node kind cluster with metrics-server
+	kind create cluster --config deploy/kind/cluster.yaml
+	kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/$(METRICS_SERVER_VERSION)/components.yaml
+	kubectl -n kube-system patch deployment metrics-server --type=json \
+	  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+	kubectl -n kube-system rollout status deployment/metrics-server --timeout=180s
+
+# Each deploy uses a new image tag, so Helm sees a changed pod spec and rolls
+# only the pods whose image changed (the dev Redis and Postgres keep running).
+deploy: TAG := kind-$(shell date +%s)
+deploy: docker-build ## build the images, load them into kind, install the chart
+	kind load docker-image $(IMAGE):$(TAG) $(MOCK_IMAGE):$(TAG) --name $(KIND_NAME)
+	helm upgrade --install llm-gateway deploy/helm/llm-gateway -f deploy/kind/values.yaml \
+	  --set image.tag=$(TAG) --set dev.mockProviders.image.tag=$(TAG) --wait --timeout 5m
+
+kind-down: ## delete the kind cluster
+	kind delete cluster --name $(KIND_NAME)
 
 lint: ## go vet + golangci-lint
 	go vet ./...

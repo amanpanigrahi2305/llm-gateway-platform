@@ -1,0 +1,51 @@
+# Chart values for the local kind cluster (make deploy). Images are built
+# locally and loaded into kind, so they are never pulled. Install the release
+# as "llm-gateway": the service names below depend on it.
+
+image:
+  repository: llm-gateway
+  tag: dev
+  pullPolicy: Never
+
+service:
+  type: NodePort
+  nodePort: 30080              # 127.0.0.1:8088 on the host (deploy/kind/cluster.yaml)
+
+dev:
+  redis: {enabled: true}
+  postgres: {enabled: true}
+  mockProviders:
+    enabled: true
+    image: {repository: llm-gateway-mock, tag: dev, pullPolicy: Never}
+    serviceType: NodePort      # admin APIs on 127.0.0.1:9190 and :9191 for failover tests
+    nodePorts: {mock-a: 30091, mock-b: 30092}
+
+config:
+  server:
+    addr: ":8080"
+    shutdown_timeout: 30s
+    drain_delay: 5s
+  providers:
+    mock-a: {type: mock, base_url: "http://llm-gateway-mock-a:9090/v1", ttft_timeout: 5s}
+    mock-b: {type: mock, base_url: "http://llm-gateway-mock-b:9090/v1", ttft_timeout: 5s}
+  aliases:
+    fast: ["mock-a/mock-1", "mock-b/mock-1"]
+  prices:
+    "mock-a/mock-1": {input_per_million: 1.00, output_per_million: 2.00}
+    "mock-b/mock-1": {input_per_million: 1.00, output_per_million: 2.00}
+  limits:
+    redis_url_env: GATEWAY_REDIS_URL       # set by the chart when dev.redis is on
+    on_store_error: fail_open
+  ledger:
+    database_url_env: GATEWAY_DATABASE_URL # set by the chart when dev.postgres is on
+  policies:
+    default: {requests_per_minute: 1000000}   # high: load tests must not hit it
+  keys:
+    # DEMO KEY for local clusters only: sk-gw-local-demo-only (public on purpose;
+    # the NodePort is published on 127.0.0.1 only).
+    - id: demo
+      owner: local
+      team: demo
+      hash: "783e8e8482a97aa521a59af69b9866b215910be263961180c5021e67963f958e"
+      aliases: ["*"]
+      policy: default
