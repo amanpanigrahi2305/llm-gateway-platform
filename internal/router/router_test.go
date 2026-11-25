@@ -16,7 +16,9 @@ import (
 type fakeProvider struct {
 	name       string
 	errs       []error
-	midStream  error // streaming: fail after the first chunk
+	midStream  error         // streaming: fail after the first chunk
+	hang       bool          // streaming: send nothing until the context ends
+	pause      time.Duration // streaming: wait this long after the first chunk, then send a second
 	mu         sync.Mutex
 	calls      int
 	lastModel  string
@@ -46,12 +48,26 @@ func (f *fakeProvider) Chat(_ context.Context, req providers.ChatRequest) (*prov
 	return &providers.ChatResponse{Content: "from " + f.name}, nil
 }
 
-func (f *fakeProvider) ChatStream(_ context.Context, req providers.ChatRequest, emit func(providers.Chunk) error) error {
+func (f *fakeProvider) ChatStream(ctx context.Context, req providers.ChatRequest, emit func(providers.Chunk) error) error {
 	if err := f.next(req); err != nil {
 		return err
 	}
+	if f.hang {
+		<-ctx.Done()
+		return &providers.Error{Provider: f.name, Message: "request failed", Err: ctx.Err()}
+	}
 	if err := emit(providers.Chunk{Content: "from " + f.name}); err != nil {
 		return err
+	}
+	if f.pause > 0 {
+		select {
+		case <-time.After(f.pause):
+		case <-ctx.Done():
+			return &providers.Error{Provider: f.name, Message: "stream read failed", Err: ctx.Err()}
+		}
+		if err := emit(providers.Chunk{Content: " again"}); err != nil {
+			return err
+		}
 	}
 	return f.midStream
 }
@@ -319,6 +335,47 @@ func TestClientErrorsDoNotOpenBreaker(t *testing.T) {
 	}
 	if r.BreakerStates()["primary"] != Closed {
 		t.Fatal("400 errors opened the breaker; they are the client's fault")
+	}
+}
+
+func withFirstTokenTimeout(provider string, d time.Duration) Options {
+	o := opts
+	o.FirstTokenTimeout = map[string]time.Duration{provider: d}
+	return o
+}
+
+func TestFirstTokenTimeoutFailsOver(t *testing.T) {
+	primary := &fakeProvider{name: "primary", hang: true}
+	r, _ := newRouterWith(t, withFirstTokenTimeout("primary", 20*time.Millisecond), primary, &fakeProvider{name: "backup"})
+	start := time.Now()
+	out, err := r.ChatStream(context.Background(), "fast", providers.ChatRequest{}, func(Target, providers.Chunk) error { return nil })
+	if err != nil || out.Target.String() != "backup/model-b" || out.Attempts != 3 {
+		t.Fatalf("err %v, outcome %+v; want 2 timed-out tries on primary, then backup", err, out)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("took %v; the first-token timeout should end each try after 20ms", took)
+	}
+}
+
+func TestFirstTokenTimeoutIsA504Error(t *testing.T) {
+	backup := &fakeProvider{name: "backup", hang: true}
+	r, _ := newRouterWith(t, withFirstTokenTimeout("backup", 20*time.Millisecond), &fakeProvider{name: "primary"}, backup)
+	_, err := r.ChatStream(context.Background(), "local", providers.ChatRequest{}, func(Target, providers.Chunk) error { return nil })
+	if !errors.Is(err, ErrFirstTokenTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want ErrFirstTokenTimeout (a deadline error)", err)
+	}
+}
+
+func TestFirstTokenTimeoutDoesNotCutAStartedStream(t *testing.T) {
+	primary := &fakeProvider{name: "primary", pause: 60 * time.Millisecond}
+	r, _ := newRouterWith(t, withFirstTokenTimeout("primary", 20*time.Millisecond), primary, &fakeProvider{name: "backup"})
+	var got []string
+	_, err := r.ChatStream(context.Background(), "fast", providers.ChatRequest{}, func(_ Target, c providers.Chunk) error {
+		got = append(got, c.Content)
+		return nil
+	})
+	if err != nil || !slices.Equal(got, []string{"from primary", " again"}) {
+		t.Fatalf("err %v, chunks %q; the timeout must stop after the first chunk", err, got)
 	}
 }
 

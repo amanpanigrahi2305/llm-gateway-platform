@@ -26,14 +26,14 @@ type OpenAICompat struct {
 }
 
 // NewOpenAICompat returns an adapter for an OpenAI-compatible API.
-func NewOpenAICompat(name, baseURL, apiKey string, timeout time.Duration, useMaxCompletionTokens bool) *OpenAICompat {
+func NewOpenAICompat(name, baseURL, apiKey string, t Timeouts, useMaxCompletionTokens bool) *OpenAICompat {
 	return &OpenAICompat{
 		name:                   name,
 		baseURL:                strings.TrimRight(baseURL, "/"),
 		apiKey:                 apiKey,
-		timeout:                timeout,
+		timeout:                t.Total,
 		useMaxCompletionTokens: useMaxCompletionTokens,
-		client:                 newHTTPClient(),
+		client:                 newHTTPClient(t.Connect),
 	}
 }
 

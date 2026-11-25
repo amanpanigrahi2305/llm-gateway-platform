@@ -22,6 +22,9 @@ var (
 	ErrUnknownAlias = errors.New("unknown model alias")
 	// ErrCircuitOpen means every target was skipped because its breaker is open.
 	ErrCircuitOpen = errors.New("circuit breaker is open for every provider of this model")
+	// ErrFirstTokenTimeout means a stream sent nothing within the provider's
+	// first-token timeout. It wraps context.DeadlineExceeded, so clients get 504.
+	ErrFirstTokenTimeout = fmt.Errorf("no first token in time: %w", context.DeadlineExceeded)
 )
 
 // Target is one provider/model pair behind an alias.
@@ -40,6 +43,9 @@ type Options struct {
 	BackoffMax  time.Duration // longest wait between two tries
 	Breaker     BreakerConfig // one breaker per provider
 	Log         *slog.Logger  // breaker state changes are logged here; nil means no logs
+	// FirstTokenTimeout is, per provider name, the longest wait for the first
+	// chunk of a stream. 0 or missing means no limit.
+	FirstTokenTimeout map[string]time.Duration
 }
 
 // Outcome tells the caller what the router did, for the usage record.
@@ -129,13 +135,37 @@ func (r *Router) ChatStream(ctx context.Context, alias string, req providers.Cha
 	emit func(Target, providers.Chunk) error) (Outcome, error) {
 	return r.run(ctx, alias, func(ctx context.Context, t Target) (bool, error) {
 		req.Model = t.Model
-		started := false
-		err := t.Provider.ChatStream(ctx, req, func(c providers.Chunk) error {
-			started = true
-			return emit(t, c)
-		})
-		return started, err
+		return r.streamOnce(ctx, t, req, emit)
 	})
+}
+
+// streamOnce makes one streaming call. If no chunk arrives within the
+// provider's first-token timeout, the call is cancelled. A stuck provider is
+// then retried or failed over in seconds, not after the total timeout.
+func (r *Router) streamOnce(ctx context.Context, t Target, req providers.ChatRequest,
+	emit func(Target, providers.Chunk) error) (started bool, err error) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	limit := r.opts.FirstTokenTimeout[t.Provider.Name()]
+	var timer *time.Timer
+	if limit > 0 {
+		timer = time.AfterFunc(limit, func() { cancel(ErrFirstTokenTimeout) })
+		defer timer.Stop()
+	}
+	err = t.Provider.ChatStream(ctx, req, func(c providers.Chunk) error {
+		if !started {
+			started = true
+			if timer != nil {
+				timer.Stop()
+			}
+		}
+		return emit(t, c)
+	})
+	if err != nil && !started && errors.Is(context.Cause(ctx), ErrFirstTokenTimeout) {
+		err = &providers.Error{Provider: t.Provider.Name(),
+			Message: fmt.Sprintf("no first token within %s", limit), Err: ErrFirstTokenTimeout}
+	}
+	return started, err
 }
 
 // attemptFunc makes one upstream call to t. started is true when part of the

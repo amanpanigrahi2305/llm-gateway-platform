@@ -38,7 +38,7 @@ func TestOpenAICompatChat(t *testing.T) {
 		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"Hi there"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
 	})
-	p := NewOpenAICompat("openai", srv.URL+"/v1", "sk-test", time.Minute, true)
+	p := NewOpenAICompat("openai", srv.URL+"/v1", "sk-test", Timeouts{Total: time.Minute}, true)
 
 	resp, err := p.Chat(context.Background(), ChatRequest{
 		Model:     "gpt-test",
@@ -64,7 +64,7 @@ func TestOllamaUsesMaxTokensAndNoAuth(t *testing.T) {
 	srv, last := fakeUpstream(t, func(w http.ResponseWriter, _ map[string]any) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
 	})
-	p := NewOpenAICompat("ollama", srv.URL+"/v1", "", time.Minute, false)
+	p := NewOpenAICompat("ollama", srv.URL+"/v1", "", Timeouts{Total: time.Minute}, false)
 	resp, err := p.Chat(context.Background(), ChatRequest{Model: "qwen", Messages: []Message{{Role: "user", Content: "x"}}, MaxTokens: intPtr(9)})
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestOpenAICompatStream(t *testing.T) {
 			fmt.Fprintf(w, "data: %s\n\n", line)
 		}
 	})
-	p := NewOpenAICompat("mock", srv.URL+"/v1", "", time.Minute, false)
+	p := NewOpenAICompat("mock", srv.URL+"/v1", "", Timeouts{Total: time.Minute}, false)
 
 	var got []Chunk
 	err := p.ChatStream(context.Background(), ChatRequest{Model: "m", Messages: []Message{{Role: "user", Content: "hi"}}},
@@ -116,7 +116,7 @@ func TestOpenAICompatStreamStopsWhenEmitFails(t *testing.T) {
 	srv, _ := fakeUpstream(t, func(w http.ResponseWriter, _ map[string]any) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\ndata: [DONE]\n\n")
 	})
-	p := NewOpenAICompat("mock", srv.URL+"/v1", "", time.Minute, false)
+	p := NewOpenAICompat("mock", srv.URL+"/v1", "", Timeouts{Total: time.Minute}, false)
 	clientGone := errors.New("client gone")
 	calls := 0
 	err := p.ChatStream(context.Background(), ChatRequest{Model: "m"}, func(Chunk) error { calls++; return clientGone })
@@ -143,7 +143,7 @@ func TestOpenAICompatErrors(t *testing.T) {
 				w.WriteHeader(tt.status)
 				fmt.Fprint(w, tt.body)
 			})
-			p := NewOpenAICompat("x", srv.URL+"/v1", "", time.Minute, false)
+			p := NewOpenAICompat("x", srv.URL+"/v1", "", Timeouts{Total: time.Minute}, false)
 			_, err := p.Chat(context.Background(), ChatRequest{Model: "m"})
 			var pe *Error
 			if !errors.As(err, &pe) || pe.Status != tt.wantStatus || pe.Message != tt.wantMsg {
@@ -157,7 +157,7 @@ func TestStreamWithoutDoneIsAnError(t *testing.T) {
 	srv, _ := fakeUpstream(t, func(w http.ResponseWriter, _ map[string]any) {
 		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
 	})
-	p := NewOpenAICompat("x", srv.URL+"/v1", "", time.Minute, false)
+	p := NewOpenAICompat("x", srv.URL+"/v1", "", Timeouts{Total: time.Minute}, false)
 	err := p.ChatStream(context.Background(), ChatRequest{Model: "m"}, func(Chunk) error { return nil })
 	var pe *Error
 	if !errors.As(err, &pe) {
@@ -169,7 +169,7 @@ func TestConnectionRefusedHasStatusZero(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close() // nothing listens here any more
-	p := NewOpenAICompat("x", url+"/v1", "", time.Minute, false)
+	p := NewOpenAICompat("x", url+"/v1", "", Timeouts{Total: time.Minute}, false)
 	_, err := p.Chat(context.Background(), ChatRequest{Model: "m"})
 	var pe *Error
 	if !errors.As(err, &pe) || pe.Status != 0 {

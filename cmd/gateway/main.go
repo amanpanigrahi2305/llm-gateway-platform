@@ -90,12 +90,14 @@ func serve(args []string) error {
 		return err
 	}
 	provs := make(map[string]providers.Provider, len(cfg.Providers))
+	ttft := make(map[string]time.Duration, len(cfg.Providers))
 	for name, pc := range cfg.Providers {
 		p, err := providers.New(name, pc, os.Getenv)
 		if err != nil {
 			return err
 		}
 		provs[name] = p
+		ttft[name] = pc.TTFTTimeout
 	}
 	rel := cfg.Reliability
 	rt, err := router.New(cfg.Aliases, provs, router.Options{
@@ -104,6 +106,8 @@ func serve(args []string) error {
 		BackoffMax:  rel.BackoffMax,
 		Breaker:     router.BreakerConfig{Failures: rel.BreakerFailures, Cooldown: rel.BreakerCooldown},
 		Log:         log,
+
+		FirstTokenTimeout: ttft,
 	})
 	if err != nil {
 		return err

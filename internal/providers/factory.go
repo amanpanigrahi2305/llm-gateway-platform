@@ -16,13 +16,14 @@ func New(name string, cfg config.Provider, getenv func(string) string) (Provider
 			return nil, fmt.Errorf("provider %s: environment variable %s is empty", name, cfg.APIKeyEnv)
 		}
 	}
+	t := Timeouts{Connect: cfg.ConnectTimeout, Total: cfg.Timeout}
 	switch cfg.Type {
 	case config.TypeOpenAI:
-		return NewOpenAICompat(name, cfg.BaseURL, apiKey, cfg.Timeout, true), nil
+		return NewOpenAICompat(name, cfg.BaseURL, apiKey, t, true), nil
 	case config.TypeOllama, config.TypeMock:
-		return NewOpenAICompat(name, cfg.BaseURL, apiKey, cfg.Timeout, false), nil
+		return NewOpenAICompat(name, cfg.BaseURL, apiKey, t, false), nil
 	case config.TypeAnthropic:
-		return NewAnthropic(name, cfg.BaseURL, apiKey, cfg.Timeout), nil
+		return NewAnthropic(name, cfg.BaseURL, apiKey, t), nil
 	}
 	return nil, fmt.Errorf("provider %s: unsupported type %q", name, cfg.Type)
 }

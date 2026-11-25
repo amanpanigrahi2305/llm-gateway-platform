@@ -6,7 +6,9 @@ package providers
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"time"
 )
 
 // Finish reasons, in OpenAI's words. Every adapter maps to these.
@@ -88,12 +90,25 @@ func (e *Error) Error() string {
 // Unwrap lets errors.Is see the cause, for example context.DeadlineExceeded.
 func (e *Error) Unwrap() error { return e.Err }
 
+// Timeouts limit one upstream call. The time-to-first-token limit is applied
+// by the router, the same way for every provider.
+type Timeouts struct {
+	Connect time.Duration // TCP connect and TLS handshake; 0 keeps Go's default (30s)
+	Total   time.Duration // the whole call, including a long stream
+}
+
 // newHTTPClient returns an HTTP client for upstream calls. Go's default keeps
 // only 2 idle connections per host, which forces new TCP and TLS handshakes
-// under load; a gateway reuses many. The total timeout comes from the context.
-func newHTTPClient() *http.Client {
+// under load; a gateway reuses many. A short connect timeout finds a dead host
+// fast, so the router can fail over. The total timeout comes from the context.
+func newHTTPClient(connectTimeout time.Duration) *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.MaxIdleConns = 256
 	t.MaxIdleConnsPerHost = 64
+	if connectTimeout > 0 {
+		dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
+		t.DialContext = dialer.DialContext
+		t.TLSHandshakeTimeout = connectTimeout
+	}
 	return &http.Client{Transport: t}
 }

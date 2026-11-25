@@ -43,8 +43,8 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	if got := c.Providers["ollama"].BaseURL; got != "http://localhost:11434/v1" {
 		t.Errorf("ollama base_url = %q, want default", got)
 	}
-	if got := c.Providers["mock"].Timeout; got != 5*time.Minute {
-		t.Errorf("timeout = %v, want 5m default", got)
+	if p := c.Providers["mock"]; p.Timeout != 5*time.Minute || p.ConnectTimeout != 5*time.Second || p.TTFTTimeout != 30*time.Second {
+		t.Errorf("timeouts = total %v, connect %v, ttft %v; want defaults 5m, 5s, 30s", p.Timeout, p.ConnectTimeout, p.TTFTTimeout)
 	}
 	if got := c.Keys[0].Policy; got != "default" {
 		t.Errorf("policy = %q, want default", got)
@@ -70,6 +70,7 @@ func TestParseRejectsBadConfig(t *testing.T) {
 		{"missing price", strings.Replace(validYAML, `  "mock/mock-1": {input_per_million: 1, output_per_million: 2}`+"\n", "", 1), `no price for "mock/mock-1"`},
 		{"bad key hash", strings.Replace(validYAML, strings.Repeat("a", 64), "not-a-hash", 1), "hash must be 64 lowercase hex"},
 		{"unknown alias on key", strings.Replace(validYAML, `aliases: ["*"]`, `aliases: ["slow"]`, 1), `unknown alias "slow"`},
+		{"ttft longer than total", strings.Replace(validYAML, "type: ollama", "type: ollama\n    ttft_timeout: 2m\n    timeout: 1m", 1), "ttft_timeout must not be longer than timeout"},
 		{"too many attempts", validYAML + "reliability: {max_attempts: 50}\n", "max_attempts must be between 1 and 10"},
 		{"backoff base above max", validYAML + "reliability: {backoff_base: 5s, backoff_max: 1s}\n", "backoff_base must not be negative or larger"},
 	}

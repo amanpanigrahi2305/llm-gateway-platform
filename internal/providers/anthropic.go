@@ -28,14 +28,14 @@ type Anthropic struct {
 }
 
 // NewAnthropic returns an adapter for the Anthropic Messages API.
-func NewAnthropic(name, baseURL, apiKey string, timeout time.Duration) *Anthropic {
+func NewAnthropic(name, baseURL, apiKey string, t Timeouts) *Anthropic {
 	client := anthropic.NewClient(
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
-		option.WithMaxRetries(0), // the gateway owns retries and failover (Phase 2)
-		option.WithHTTPClient(newHTTPClient()),
+		option.WithMaxRetries(0), // the gateway's router owns retries and failover
+		option.WithHTTPClient(newHTTPClient(t.Connect)),
 	)
-	return &Anthropic{name: name, timeout: timeout, client: client}
+	return &Anthropic{name: name, timeout: t.Total, client: client}
 }
 
 // Name returns the provider name from the config.

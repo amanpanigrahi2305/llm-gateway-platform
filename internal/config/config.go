@@ -53,10 +53,12 @@ type Server struct {
 
 // Provider is one upstream LLM API.
 type Provider struct {
-	Type      string        `yaml:"type"`
-	BaseURL   string        `yaml:"base_url"`
-	APIKeyEnv string        `yaml:"api_key_env"` // name of the env var that holds the key, never the key
-	Timeout   time.Duration `yaml:"timeout"`     // total time for one upstream call
+	Type           string        `yaml:"type"`
+	BaseURL        string        `yaml:"base_url"`
+	APIKeyEnv      string        `yaml:"api_key_env"`     // name of the env var that holds the key, never the key
+	ConnectTimeout time.Duration `yaml:"connect_timeout"` // TCP connect and TLS handshake
+	TTFTTimeout    time.Duration `yaml:"ttft_timeout"`    // streaming: longest wait for the first token
+	Timeout        time.Duration `yaml:"timeout"`         // total time for one upstream call
 }
 
 // Price is the cost in USD per 1 million tokens.
@@ -130,6 +132,12 @@ func (c *Config) setDefaults() {
 			p.BaseURL = defaultBaseURL[p.Type]
 		}
 		p.BaseURL = strings.TrimRight(p.BaseURL, "/")
+		if p.ConnectTimeout == 0 {
+			p.ConnectTimeout = 5 * time.Second
+		}
+		if p.TTFTTimeout == 0 {
+			p.TTFTTimeout = 30 * time.Second
+		}
 		if p.Timeout == 0 {
 			p.Timeout = 5 * time.Minute
 		}
@@ -198,6 +206,12 @@ func (c *Config) validate() []string {
 		}
 		if strings.Contains(name, "/") {
 			add("providers.%s: name must not contain \"/\"", name)
+		}
+		if p.ConnectTimeout < 0 || p.TTFTTimeout < 0 || p.Timeout < 0 {
+			add("providers.%s: timeouts must not be negative", name)
+		}
+		if p.TTFTTimeout > p.Timeout {
+			add("providers.%s: ttft_timeout must not be longer than timeout", name)
 		}
 	}
 

@@ -195,7 +195,7 @@ func fakeAnthropic(t *testing.T, status int, body string, gotRequest *map[string
 func TestAnthropicChatStream(t *testing.T) {
 	var sent map[string]any
 	srv := fakeAnthropic(t, 200, anthropicStream, &sent)
-	p := NewAnthropic("anthropic", srv.URL, "test-key", time.Minute)
+	p := NewAnthropic("anthropic", srv.URL, "test-key", Timeouts{Total: time.Minute})
 
 	var chunks []Chunk
 	err := p.ChatStream(context.Background(), ChatRequest{
@@ -223,7 +223,7 @@ func TestAnthropicChatStream(t *testing.T) {
 
 func TestAnthropicErrorKeepsStatus(t *testing.T) {
 	srv := fakeAnthropic(t, 529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`, nil)
-	p := NewAnthropic("anthropic", srv.URL, "test-key", time.Minute)
+	p := NewAnthropic("anthropic", srv.URL, "test-key", Timeouts{Total: time.Minute})
 	_, err := p.Chat(context.Background(), ChatRequest{Model: "claude-opus-5-5", Messages: []Message{{Role: "user", Content: "hi"}}})
 	var pe *Error
 	if !errors.As(err, &pe) || pe.Status != 529 {
