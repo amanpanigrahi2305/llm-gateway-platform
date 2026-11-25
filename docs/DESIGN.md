@@ -286,7 +286,170 @@ while Postgres is down.
 and mock-b 1,935. Laptop: AMD Ryzen AI 9 HX PRO 375, WSL2.
 
 ## Phase 3 — Containers + Kubernetes
-_TBD_
+
+Evidence: `docs/evidence/phase3-compose.md` (laptop stack) and
+`docs/evidence/phase3-kind.md` (kind cluster).
+
+### Small distroless images
+**Decision:** a two-stage Dockerfile. Stage 1 compiles static Go binaries
+(`CGO_ENABLED=0`); stage 2 copies them into `distroless/static-debian13:nonroot`.
+The final image has no shell, no package manager and runs as user 65532. The
+build stage runs on the build machine's own CPU and cross-compiles, so an arm64
+image builds fast on an amd64 laptop (no emulation).
+**Options:** Alpine (has a shell, so easy to debug), `scratch` (smaller, but no
+CA certificates, time zones or non-root user unless added by hand), a full
+Debian or Ubuntu image.
+**Why:** fewer files means fewer CVEs for Trivy to report (Phase 7) and nothing
+for an attacker to use if they get in: no shell to open.
+**Trade-off:** `kubectl exec ... sh` does not work. Debug with
+`kubectl debug --image=busybox --target=gateway` (an ephemeral container that
+shares the pod's process view) instead.
+**Measured:** gateway 7.41 MB compressed (amd64), 6.87 MB (arm64); mock 3.79 MB.
+Both architectures built in 86 s.
+
+### A laptop stack with Docker Compose
+**Decision:** `make compose-up` starts the gateway, Redis, Postgres, Ollama and
+two mocks. Every port is bound to 127.0.0.1, and every app container has a
+read-only root, no Linux capabilities and `no-new-privileges`.
+**Why:** a new developer gets the full system with one command and no cloud
+account. Ollama gives a real local model at no cost.
+**Measured:** ready in 22.8 s; a mock request and an Ollama request (4.2 s cold,
+0.12 s warm) both worked, and failover worked inside the stack.
+
+### One Helm chart; test services behind a flag
+**Decision:** one chart deploys the gateway anywhere. Redis, Postgres and the two
+mocks are in the same chart under `dev.*`, off by default; the kind values turn
+them on. In production, Redis and Postgres come from outside (managed services
+in Phase 6) through an existing Secret.
+**Options:** Bitnami sub-charts for Redis and Postgres; a separate "dev" chart.
+**Why:** the test services are about 60 lines each, run as non-root with a
+read-only root, and keep no data (Postgres uses an `emptyDir`). A sub-chart
+would add hundreds of settings we do not need.
+**Trade-off:** the dev Postgres loses its data when its pod moves. That is fine
+for tests and the reason it is never enabled outside a local cluster.
+
+### Probes: liveness never checks Redis or Postgres
+**Decision:** three probes.
+- **Startup** (`/healthz`, every 1 s, up to 30 s): the other probes wait for it.
+- **Liveness** (`/healthz`): is the process alive? It never checks Redis,
+  Postgres or providers.
+- **Readiness** (`/readyz`, every 2 s): should this pod get traffic? It turns
+  false when shutdown starts.
+**Why:** if liveness checked Redis, a Redis outage would make Kubernetes restart
+**every** gateway pod at once and turn a small problem (limits fail open) into a
+full outage. A restart only helps a stuck process, so that is all liveness asks.
+
+### Graceful shutdown on Kubernetes
+**Decision:** on SIGTERM the gateway turns `/readyz` to 503, keeps serving for
+`drain_delay` (5 s), then stops taking new connections and lets open requests
+and streams finish (up to 30 s). Last, it writes what is left in the ledger
+buffer. `terminationGracePeriodSeconds` is 45 s, more than 5 + 30.
+**Why the 5 s wait:** when a pod is deleted, Kubernetes sends SIGTERM and removes
+the pod from the Service at the same time. kube-proxy on every node needs a
+moment to update its rules. A pod that stopped at once would refuse requests that
+were already routed to it.
+**Options:** a `preStop` sleep hook (the image has no `sleep` binary; Kubernetes
+1.30+ has a built-in sleep action that would also work).
+**Trade-off:** each pod takes at least 5 s to stop, so rollouts are slower.
+**Measured:** both original pods deleted one after the other under steady load
+(20 virtual users, 60 s): 11,400 requests, **0 failed**, p95 107.80 ms. Each
+replacement was ready in about 3 s. Both stopping pods wrote their ledger buffer
+(0 dropped), and the table gained exactly 11,400 rows.
+
+### Rollouts never drop below the wanted number of pods
+**Decision:** `maxUnavailable: 0, maxSurge: 1`: a new pod must be ready before an
+old one is stopped. A PodDisruptionBudget (`maxUnavailable: 1`) stops a node
+drain from taking down both pods at once.
+**Trade-off:** a rollout needs room for one extra pod.
+**Measured:** `kubectl rollout restart` under the same load: 11,380 requests,
+**0 failed**; ready endpoints never fell below 2.
+
+### Spread pods across nodes: a rule, not a wish
+**Decision:** a topology spread on `kubernetes.io/hostname` with `maxSkew: 1`,
+`whenUnsatisfiable: DoNotSchedule`, `matchLabelKeys: [pod-template-hash]` and
+`nodeTaintsPolicy: Honor`.
+**What went wrong first:** with `ScheduleAnyway`, a rollout put **both** gateway
+pods on one worker. `ScheduleAnyway` only adds to a node's score, and the
+scheduler liked the less busy node better for both pods. One node failure would
+then have taken every replica, which the PodDisruptionBudget cannot prevent
+(it only limits voluntary evictions).
+**Why the other two settings:** the spread counts pods that match the label
+selector, and old and new pods of a rollout share those labels. Without
+`pod-template-hash`, the new pods are placed to balance the *old* ones and can
+still end up together. Without `nodeTaintsPolicy: Honor`, the tainted control
+plane counts as an empty node, and `DoNotSchedule` would refuse a second pod on
+a worker.
+**Trade-off:** if only one node can take pods, `DoNotSchedule` still works (one
+domain has no skew); but with many replicas and too few nodes, pods can stay
+`Pending` instead of crowding one node.
+**Measured:** one pod per worker after a deploy and after each of 3 rolling
+restarts.
+
+### Keep-alive connections and kube-proxy: ask clients to reconnect
+**Decision:** `server.max_connection_age` (default 30 s, ±10% per connection).
+After that age, the next response carries `Connection: close`; Go's server closes
+the connection after that response and the client opens a new one. During the
+shutdown drain, every response carries it.
+**What went wrong first:** in the first HPA test the HPA did its job (2 → 4 → 6
+pods), but the new pods got almost no traffic. At the end of the load the 2
+original pods used 998m and 995m CPU (their 1-core limit) and the 4 new pods
+2–3m. kube-proxy picks a pod once per TCP connection; k6's 100 keep-alive
+connections were opened at the start and never moved. Real clients with
+connection pools (OpenAI SDKs, other services) behave the same way.
+**Options:** a layer-7 proxy that balances each request (an Ingress controller or
+a service mesh such as Linkerd); clients that open a new connection per request
+(slow, and we do not control clients); `max_connection_age` in the server.
+**Why:** it is about 30 lines, works with any client and any load balancer, and is
+the same idea as gRPC's `MaxConnectionAge` and Envoy's `max_connection_duration`.
+The jitter stops a pool that connected all at once from reconnecting all at once.
+**Trade-off:** one extra TCP handshake (and TLS handshake, if TLS ends at the pod)
+per connection every 30 s, which is nothing next to an LLM call. Load moves to new
+pods only as connections age, so it takes up to ~33 s to rebalance.
+
+**Measured:** the same HPA test (100 virtual users, 180 s) before and after:
+1,853 → 3,814 requests/s, p95 97.25 → 61.22 ms, and at the end of the load all 6
+pods were busy (614–932m CPU) instead of 2.
+
+### HPA on CPU: scale up fast, scale down slowly
+**Decision:** `autoscaling/v2` on CPU, target 70% of the 250m request, 2 to 6
+pods. Scale up: no waiting window, up to +100% every 15 s. Scale down: a 120 s
+window, then at most 1 pod every 30 s.
+**Options:** scale on requests per second or on requests in flight (needs the
+Phase 4 metrics plus KEDA or the Prometheus Adapter); a fixed replica count.
+**Why CPU first:** it needs only metrics-server, and the gateway's CPU does follow
+its request rate (3,814 requests/s used about 5 cores). Slow scale-down stops the
+pod count from going up and down with short dips.
+**Trade-off:** an LLM gateway mostly *waits* for providers. With real models
+(seconds per answer) many requests can be in flight while CPU stays low, so CPU
+under-reports load. Requests in flight is the better signal; switch to it once
+Phase 4 exports it.
+**Measured:** 2 → 4 pods at the first CPU reading under load (t=32 s), 4 → 6 at
+t=45 s; 688,351 requests, **0 failed**, p95 61.22 ms. Back to 2 pods 255 s after
+the load ended (CPU readings lag 30–45 s behind the load, then the 120 s window,
+then 1 pod per 30 s).
+
+### Pod security
+**Decision:** every pod runs as non-root with a read-only root filesystem, all
+Linux capabilities dropped, no privilege escalation and the `RuntimeDefault`
+seccomp profile. The service account token is not mounted (the gateway never
+calls the Kubernetes API).
+**Why:** these settings pass the Kubernetes "restricted" Pod Security Standard,
+and a stolen token cannot be used if it is not there.
+**Measured:** on kind, the gateway and mocks run as uid 65532, Redis as 999 and
+Postgres as 70, all with a read-only root.
+
+### kind for local Kubernetes
+**Decision:** a 3-node kind cluster (1 control plane, 2 workers) created by
+`make kind-up`, with metrics-server for the HPA. `make deploy` builds the images,
+loads them into the nodes and installs the chart, with a new image tag each time,
+so only the gateway pods roll and the test Postgres keeps its data.
+**Options:** minikube (one node by default), k3d (k3s, not upstream Kubernetes),
+Docker Desktop's built-in Kubernetes (one node).
+**Why:** kind runs upstream Kubernetes with several nodes in Docker, and it also
+runs in GitHub Actions (Phase 7). Two workers make pod spread and drains real.
+The node image is pinned by digest, so every run gets the same Kubernetes build.
+**Trade-off:** traffic from the laptop reaches the NodePort through Docker's port
+forwarder, so latency numbers include that hop and are not cloud numbers.
 
 ## Phase 4 — Observability
 _TBD_
