@@ -1,0 +1,17 @@
+apiVersion: v2
+name: llm-gateway
+description: >-
+  Open-source, OpenAI-compatible LLM gateway: failover across providers,
+  per-key rate limits and budgets, and token cost tracking.
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+home: https://github.com/amanpanigrahi2305/llm-gateway-platform
+sources:
+  - https://github.com/amanpanigrahi2305/llm-gateway-platform
+keywords: [llm, ai-gateway, openai, anthropic, ollama, failover, rate-limiting]
+maintainers:
+  - name: Aman Panigrahi
+    url: https://github.com/amanpanigrahi2305
+annotations:
+  artifacthub.io/license: Apache-2.0

@@ -1,0 +1,15 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+# Alerting and recording rules for the Prometheus Operator.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    {{- toYaml .Values.metrics.prometheusRule.groups | nindent 4 }}
+{{- end }}

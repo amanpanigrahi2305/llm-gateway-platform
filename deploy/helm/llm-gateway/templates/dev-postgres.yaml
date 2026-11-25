@@ -1,0 +1,85 @@
+{{- if .Values.dev.postgres.enabled }}
+{{- $name := printf "%s-postgres" (include "llm-gateway.fullname" .) }}
+{{- /* A random password on first install; an upgrade reuses the existing Secret. */}}
+{{- $password := randAlphaNum 24 }}
+{{- with (lookup "v1" "Secret" .Release.Namespace $name) }}
+{{- $password = index .data "password" | b64dec }}
+{{- end }}
+# Dev only: one Postgres pod for the usage ledger. Its data lives in an
+# emptyDir, so it is lost when the pod goes. Use a managed database in production.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.devLabels" (list $ $name) | nindent 4 }}
+type: Opaque
+stringData:
+  password: {{ $password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.devLabels" (list $ $name) | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway.devLabels" (list $ $name) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70            # the postgres user in the official Alpine image
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          image: {{ .Values.dev.postgres.image }}
+          env:
+            - {name: POSTGRES_USER, value: gateway}
+            - {name: POSTGRES_DB, value: gateway}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ $name }}, key: password}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "gateway", "-d", "gateway"]}
+            periodSeconds: 2
+          securityContext:
+            {{- include "llm-gateway.containerSecurity" . | nindent 12 }}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql}
+            - {name: run, mountPath: /var/run/postgresql}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: run, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.devLabels" (list $ $name) | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
+{{- end }}

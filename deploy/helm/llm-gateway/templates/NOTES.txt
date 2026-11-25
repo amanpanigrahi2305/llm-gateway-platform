@@ -1,0 +1,11 @@
+LLM gateway {{ .Chart.AppVersion }} is installed as {{ include "llm-gateway.fullname" . }}.
+{{- if not .Values.config.keys }}
+
+WARNING: config.keys is empty, so the gateway will not start. Make a key with
+`gateway gen-key` and put its hash under config.keys in your values file.
+{{- end }}
+
+Try it from inside the cluster:
+  kubectl run curl --rm -it --restart=Never --image=curlimages/curl -- \
+    curl -s http://{{ include "llm-gateway.fullname" . }}.{{ .Release.Namespace }}.svc/v1/models \
+    -H "Authorization: Bearer <your key>"

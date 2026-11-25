@@ -1,0 +1,67 @@
+{{- if .Values.dev.mockProviders.enabled }}
+{{- $root := . }}
+{{- $m := .Values.dev.mockProviders }}
+{{- range $mock := $m.names }}
+{{- $name := printf "%s-%s" (include "llm-gateway.fullname" $root) $mock }}
+# Dev only: a fake LLM provider for tests, load tests and chaos tests. Its
+# admin API (outage switch, latency) has no auth: never expose it publicly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.devLabels" (list $root $name) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway.devLabels" (list $root $name) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mock
+          image: "{{ $m.image.repository }}:{{ $m.image.tag | default $root.Chart.AppVersion }}"
+          imagePullPolicy: {{ $m.image.pullPolicy }}
+          args: ["-addr", ":9090"]
+          ports:
+            - {name: http, containerPort: 9090}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+          securityContext:
+            {{- include "llm-gateway.containerSecurity" $root | nindent 12 }}
+          resources:
+            requests: {cpu: 100m, memory: 32Mi}
+            limits: {cpu: "1", memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.devLabels" (list $root $name) | nindent 4 }}
+spec:
+  type: {{ $m.serviceType }}
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/instance: {{ $root.Release.Name }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      {{- if and (eq $m.serviceType "NodePort") (hasKey $m.nodePorts $mock) }}
+      nodePort: {{ index $m.nodePorts $mock }}
+      {{- end }}
+---
+{{- end }}
+{{- end }}

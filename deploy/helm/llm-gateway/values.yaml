@@ -1,0 +1,105 @@
+# Values for the llm-gateway chart. deploy/kind/values.yaml is a full example.
+
+image:
+  repository: ghcr.io/amanpanigrahi2305/llm-gateway
+  tag: ""                      # default: the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2                # used only when autoscaling is off
+
+# Scale on CPU. The HPA needs metrics-server in the cluster.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70   # of the CPU request
+
+# A voluntary disruption (node drain, cluster upgrade) may take down at most
+# one pod at a time. It does not protect against crashes or `kubectl delete`.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Requests decide scheduling and the HPA's percentage. The CPU limit keeps one
+# pod's capacity fixed, so "requests per second per pod" means something.
+resources:
+  requests: {cpu: 250m, memory: 64Mi}
+  limits: {cpu: "1", memory: 256Mi}
+
+# Must be longer than config.server.drain_delay + shutdown_timeout, or the
+# kubelet kills the pod before open streams finish.
+terminationGracePeriodSeconds: 45
+
+service:
+  type: ClusterIP
+  port: 80
+  nodePort: null               # only for type NodePort
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Spread pods over nodes, so one node going down cannot take every replica.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Secrets reach the gateway as environment variables: provider API keys, the
+# Redis URL and the Postgres URL. The config file only names the variables.
+existingSecret: ""             # name of a Secret you manage (recommended)
+secretEnv: {}                  # or let the chart create one (fine for tests)
+#  ANTHROPIC_API_KEY: "..."
+#  GATEWAY_REDIS_URL: "redis://:password@redis:6379/0"
+extraEnv: []                   # plain env vars, for example [{name: X, value: "y"}]
+
+# The gateway config file (see config.example.yaml in the repo). It is stored in
+# a ConfigMap; a change rolls the pods. Keys are stored only as SHA-256 hashes.
+config:
+  server:
+    addr: ":8080"
+    shutdown_timeout: 30s
+    drain_delay: 5s            # time for Kubernetes to take the pod out of the Service
+  providers: {}
+  aliases: {}
+  prices: {}
+  policies:
+    default: {}
+  keys: []
+
+# Prometheus Operator objects. They need its CRDs in the cluster.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+    groups: []
+
+# Dev-only extras for kind and CI. Not for production: they keep no data
+# across restarts. In production use managed Redis and Postgres.
+dev:
+  redis:
+    enabled: false
+    image: redis:8-alpine
+  postgres:
+    enabled: false
+    image: postgres:18-alpine
+  mockProviders:
+    enabled: false
+    image:
+      repository: ghcr.io/amanpanigrahi2305/llm-gateway-mock
+      tag: ""                  # default: the chart's appVersion
+      pullPolicy: IfNotPresent
+    names: [mock-a, mock-b]
+    serviceType: ClusterIP
+    nodePorts: {}              # for type NodePort, for example {mock-a: 30091}
