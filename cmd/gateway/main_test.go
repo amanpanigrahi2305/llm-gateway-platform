@@ -40,6 +40,13 @@ func TestHashKeyReadsStdin(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	var out bytes.Buffer
+	if err := run([]string{"version"}, nil, &out); err != nil || strings.TrimSpace(out.String()) != "dev" {
+		t.Fatalf("version printed %q, err %v; want the default \"dev\"", out.String(), err)
+	}
+}
+
 func TestUnknownCommand(t *testing.T) {
 	if err := run([]string{"launch"}, nil, &bytes.Buffer{}); err == nil {
 		t.Fatal("unknown command was accepted")

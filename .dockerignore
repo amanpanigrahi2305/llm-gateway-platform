@@ -1,0 +1,8 @@
+# Send only what the build needs. An allow-list means files such as .env,
+# config.local.yaml or CLAUDE.md can never end up in the build context.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+**/*_test.go

@@ -1,15 +1,28 @@
 # Common tasks. Run `make help` to list them.
-SHELL  := /bin/bash
-CONFIG ?= config.local.yaml
+SHELL      := /bin/bash
+CONFIG     ?= config.local.yaml
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+IMAGE      ?= llm-gateway
+MOCK_IMAGE ?= llm-gateway-mock
+TAG        ?= dev
 
-.PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down
+.PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
+	docker-build docker-build-multiarch
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
 
 build: ## build the binaries into bin/
-	CGO_ENABLED=0 go build -o bin/gateway ./cmd/gateway
+	CGO_ENABLED=0 go build -ldflags "-X main.version=$(VERSION)" -o bin/gateway ./cmd/gateway
 	CGO_ENABLED=0 go build -o bin/mockprovider ./cmd/mockprovider
+
+docker-build: ## build the gateway and mock images for this machine
+	docker build --target gateway --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
+	docker build --target mockprovider -t $(MOCK_IMAGE):$(TAG) .
+
+docker-build-multiarch: ## build both images for linux/amd64 and linux/arm64 (kept locally, not pushed)
+	docker buildx build --platform linux/amd64,linux/arm64 --target gateway --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
+	docker buildx build --platform linux/amd64,linux/arm64 --target mockprovider -t $(MOCK_IMAGE):$(TAG) .
 
 run-mock: build ## run the mock LLM on :9090
 	./bin/mockprovider -addr :9090

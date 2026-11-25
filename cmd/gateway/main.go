@@ -1,8 +1,9 @@
-// Command gateway runs the LLM gateway, plus two helper commands for client keys.
+// Command gateway runs the LLM gateway, plus helper commands.
 //
 //	gateway serve -config config.yaml   run the HTTP server (the default command)
 //	gateway gen-key                     print a new client key and its hash
 //	gateway hash-key < keyfile          print the hash of an existing key
+//	gateway version                     print the build version
 package main
 
 import (
@@ -29,6 +30,9 @@ import (
 	"github.com/amanpanigrahi2305/llm-gateway-platform/internal/usage"
 )
 
+// version is set at build time: go build -ldflags "-X main.version=v0.1.0".
+var version = "dev"
+
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -48,8 +52,11 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		return genKey(stdout)
 	case "hash-key":
 		return hashKey(stdin, stdout)
+	case "version":
+		_, err := fmt.Fprintln(stdout, version)
+		return err
 	}
-	return fmt.Errorf("unknown command %q (use serve, gen-key or hash-key)", cmd)
+	return fmt.Errorf("unknown command %q (use serve, gen-key, hash-key or version)", cmd)
 }
 
 // genKey prints a new key and its hash. The key is shown only this once.
@@ -155,7 +162,7 @@ func serve(args []string) error {
 	listenErr := make(chan error, 1)
 	go func() { listenErr <- srv.ListenAndServe() }()
 	apiServer.SetReady(true)
-	log.Info("gateway listening", "addr", cfg.Server.Addr, "aliases", rt.Aliases(), "providers", len(provs))
+	log.Info("gateway listening", "version", version, "addr", cfg.Server.Addr, "aliases", rt.Aliases(), "providers", len(provs))
 
 	select {
 	case err := <-listenErr:
