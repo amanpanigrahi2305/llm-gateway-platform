@@ -42,9 +42,14 @@ serviceAccount:
   annotations: {}
 
 # Spread pods over nodes, so one node going down cannot take every replica.
+# DoNotSchedule makes it a rule, not a wish: with ScheduleAnyway the scheduler
+# put both pods on one node when the other node was busier. Each rollout's pods
+# are spread on their own (pod-template-hash), and nodes that pods cannot run
+# on (for example a tainted control plane) are not counted.
 topologySpread:
   enabled: true
   maxSkew: 1
+  whenUnsatisfiable: DoNotSchedule
 
 podAnnotations: {}
 podLabels: {}

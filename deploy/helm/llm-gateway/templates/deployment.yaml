@@ -109,7 +109,9 @@ spec:
       topologySpreadConstraints:
         - maxSkew: {{ .Values.topologySpread.maxSkew }}
           topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          nodeTaintsPolicy: Honor             # do not count nodes the pod cannot run on
+          matchLabelKeys: [pod-template-hash] # spread the pods of each rollout on their own
           labelSelector:
             matchLabels:
               {{- include "llm-gateway.selectorLabels" . | nindent 14 }}
