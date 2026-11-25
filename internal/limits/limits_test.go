@@ -80,7 +80,8 @@ func TestDailyBudget(t *testing.T) {
 	l.Record(ctx, "dev", "p", 0, 0.00006) // $0.00012 spent of $0.0001
 	d := l.Admit(ctx, "dev", "p")
 	want := 13*time.Hour + 29*time.Minute + 15*time.Second
-	if d.Allowed || d.Reason != ReasonDaily || d.RetryAfter != want || !strings.Contains(d.Message, "00:00 UTC") {
+	if d.Allowed || d.Reason != ReasonDaily || d.RetryAfter != want ||
+		!strings.Contains(d.Message, "$0.0001 ") || !strings.Contains(d.Message, "00:00 UTC") {
 		t.Fatalf("over budget: %+v; want refused, daily_budget, retry after %v", d, want)
 	}
 	l.advance(want) // midnight UTC: a new day

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -110,10 +111,10 @@ func (l *Limiter) Admit(ctx context.Context, keyID, policy string) Decision {
 				"rate limit reached: %d tokens per minute for this key", p.TokensPerMinute)
 		case p.DailyUSD > 0 && used[1] >= nanoUSD(p.DailyUSD):
 			return refuse(ReasonDaily, w.untilDay,
-				"daily budget of $%.2f for this key is used up; it resets at 00:00 UTC", p.DailyUSD)
+				"daily budget of $%s for this key is used up; it resets at 00:00 UTC", usd(p.DailyUSD))
 		case p.MonthlyUSD > 0 && used[2] >= nanoUSD(p.MonthlyUSD):
 			return refuse(ReasonMonthly, w.untilMonth,
-				"monthly budget of $%.2f for this key is used up; it resets on the 1st (UTC)", p.MonthlyUSD)
+				"monthly budget of $%s for this key is used up; it resets on the 1st (UTC)", usd(p.MonthlyUSD))
 		}
 	}
 	return Decision{Allowed: true}
@@ -170,4 +171,7 @@ func refuse(reason string, retryAfter time.Duration, format string, args ...any)
 
 // nanoUSD turns dollars into whole nano-dollars (1e-9 USD) for integer
 // counters. Redis counts integers, and integers do not drift like floats.
-func nanoUSD(usd float64) int64 { return int64(math.Round(usd * 1e9)) }
+func nanoUSD(dollars float64) int64 { return int64(math.Round(dollars * 1e9)) }
+
+// usd prints dollars with as many digits as needed: 5, 0.25, 0.0001.
+func usd(dollars float64) string { return strconv.FormatFloat(dollars, 'f', -1, 64) }
