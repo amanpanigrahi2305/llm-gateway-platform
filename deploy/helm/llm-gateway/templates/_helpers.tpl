@@ -38,6 +38,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 {{- end -}}
 
+{{/* The gateway image: by digest when image.digest is set, else by tag. */}}
+{{- define "llm-gateway.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end -}}
+
 {{/* Labels for a dev-only component. Call with (list $ "name"). */}}
 {{- define "llm-gateway.devLabels" -}}
 {{- $root := index . 0 -}}

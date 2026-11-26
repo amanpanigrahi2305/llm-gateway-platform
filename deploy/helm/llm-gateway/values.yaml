@@ -3,6 +3,7 @@
 image:
   repository: ghcr.io/amanpanigrahi2305/llm-gateway
   tag: ""                      # default: the chart's appVersion
+  digest: ""                   # e.g. sha256:...; when set, used instead of the tag
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -50,6 +51,15 @@ topologySpread:
   enabled: true
   maxSkew: 1
   whenUnsatisfiable: DoNotSchedule
+
+# Only the HTTP port of the gateway pods accepts connections. ingressFrom
+# limits who may connect (NetworkPolicy peers); empty means anyone in or outside
+# the cluster. Egress is not limited: provider APIs have changing IP addresses,
+# which plain NetworkPolicies cannot follow.
+networkPolicy:
+  enabled: true
+  ingressFrom: []
+#  - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress}}
 
 podAnnotations: {}
 podLabels: {}

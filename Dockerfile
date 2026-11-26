@@ -22,15 +22,18 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 # distroless/static has no shell and no package manager: only CA certificates,
 # time zone data and /etc/passwd. Less software means fewer CVEs and nothing
-# for an attacker to run. The :nonroot tag runs as user 65532.
+# for an attacker to run. The :nonroot tag already runs as user 65532; USER
+# says it again so scanners and readers see it.
 FROM gcr.io/distroless/static-debian13:nonroot AS mockprovider
 COPY --from=build /out/mockprovider /mockprovider
+USER 65532:65532
 EXPOSE 9090
 ENTRYPOINT ["/mockprovider"]
 
 # The last stage is the default target.
 FROM gcr.io/distroless/static-debian13:nonroot AS gateway
 COPY --from=build /out/gateway /gateway
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/gateway"]
 CMD ["serve", "-config", "/etc/llm-gateway/config.yaml"]
