@@ -1,0 +1,24 @@
+# Checkov settings for `checkov -d .` (CI runs it on every push).
+# Every skipped check is listed here with the reason. Everything else must pass.
+framework:
+  - dockerfile
+  - helm
+  - github_actions
+  - secrets
+skip-path:
+  - loadtest
+compact: true
+quiet: true
+skip-check:
+  # Docker HEALTHCHECK: Kubernetes ignores it and uses the chart's probes, and
+  # the distroless image has no shell or curl to run one.
+  - CKV_DOCKER_2
+  # Default namespace: a chart must not hard-code a namespace; `helm install -n`
+  # chooses it.
+  - CKV_K8S_21
+  # Pull policy Always: release tags are never rebuilt, and image.digest pins the
+  # image by digest, so IfNotPresent cannot run a stale image.
+  - CKV_K8S_15
+  # Image by digest: supported (set image.digest); the default values use the
+  # chart's appVersion tag so the chart works without editing.
+  - CKV_K8S_43

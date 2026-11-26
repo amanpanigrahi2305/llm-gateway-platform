@@ -11,7 +11,7 @@ KIND_NAME  := llm-gateway
 METRICS_SERVER_VERSION := v0.9.1
 
 .PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
-	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy kind-down
+	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy smoke scan kind-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -88,6 +88,16 @@ deploy: docker-build ## build the images, load them into kind, install the chart
 	kind load docker-image $(IMAGE):$(TAG) $(MOCK_IMAGE):$(TAG) --name $(KIND_NAME)
 	helm upgrade --install llm-gateway deploy/helm/llm-gateway -f deploy/kind/values.yaml \
 	  --set image.tag=$(TAG) --set dev.mockProviders.image.tag=$(TAG) --wait --timeout 5m
+
+smoke: ## smoke test the gateway on kind (after deploy)
+	scripts/ci/kind-smoke.sh
+
+scan: ## the CI scans: Trivy on both images (fails on CRITICAL), Checkov, gitleaks
+	$(MAKE) docker-build TAG=scan
+	trivy image --no-progress --scanners vuln --severity CRITICAL --exit-code 1 $(IMAGE):scan
+	trivy image --no-progress --scanners vuln --severity CRITICAL --exit-code 1 $(MOCK_IMAGE):scan
+	checkov -d .
+	gitleaks git . --redact --no-banner
 
 kind-down: ## delete the kind cluster
 	kind delete cluster --name $(KIND_NAME)

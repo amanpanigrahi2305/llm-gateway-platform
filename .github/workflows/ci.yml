@@ -1,0 +1,108 @@
+# CI: runs on every pull request and every push to main.
+# Actions are pinned to full commit SHAs (the tag is in the comment), and tools
+# are installed by scripts/ci/install-tools.sh with fixed SHA-256 checksums, so
+# a moved tag or a replaced download cannot change what runs here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go (vet, lint, race tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+      - name: unit tests (race detector)
+        run: go test -race -count=1 ./...
+
+  checks:
+    name: checks (gitleaks, actionlint, helm lint, checkov)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks scans every commit, not only the last one
+          persist-credentials: false
+      - name: install tools
+        run: |
+          scripts/ci/install-tools.sh gitleaks actionlint helm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: gitleaks (secrets in any commit)
+        run: gitleaks git . --redact --no-banner
+      - name: actionlint (workflow files)
+        run: actionlint
+      - name: helm lint
+        run: make helm-lint
+      - name: checkov (Dockerfile, chart, workflows; skips in .checkov.yaml)
+        run: |
+          pipx install checkov==3.4.6
+          checkov -d .
+
+  image:
+    name: image (build, Trivy scan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install trivy
+        run: |
+          scripts/ci/install-tools.sh trivy
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: build images
+        run: make docker-build TAG=ci
+      - name: Trivy (fail on CRITICAL)
+        run: |
+          for img in llm-gateway:ci llm-gateway-mock:ci; do
+            trivy image --no-progress --scanners vuln --severity CRITICAL --exit-code 1 "$img"
+          done
+      - name: Trivy report (all severities, for the log)
+        run: trivy image --no-progress --scanners vuln llm-gateway:ci
+
+  kind:
+    name: kind (install the chart, smoke test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install kind and helm
+        run: |
+          scripts/ci/install-tools.sh kind helm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: create the cluster
+        run: make kind-up
+      - name: build, load and install
+        run: make deploy
+      - name: smoke test (mock providers only)
+        run: scripts/ci/kind-smoke.sh
+      - name: debug output
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get events --sort-by=.lastTimestamp | tail -30
+          kubectl logs -l app.kubernetes.io/name=llm-gateway --tail=50
