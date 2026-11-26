@@ -1,0 +1,9 @@
+# gitleaks settings (used by CI and by local scans from the repo root).
+# All of gitleaks' default rules stay on. Each allowlist entry says why.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Names of environment variables, not values: ledger.password_env = \"GATEWAY_DB_PASSWORD\""
+regexTarget = "line"
+regexes = ['''password_env\s*(=|==|:)\s*"[A-Z][A-Z0-9_]*"''']
