@@ -1,0 +1,136 @@
+# Release: runs when a version tag (v*) is pushed.
+# 1. builds the gateway and mock images for linux/amd64 and linux/arm64 and
+#    pushes them to GHCR with the built-in GITHUB_TOKEN (no cloud credentials)
+# 2. makes an SPDX SBOM of each image with Syft
+# 3. signs each image and attaches its SBOM as a signed attestation, keyless:
+#    cosign gets a short-lived certificate for this workflow from Sigstore
+#    through GitHub's OIDC token (the only place the OIDC token is used)
+# 4. verifies the signatures with the identity they must have
+# 5. pushes the Helm chart to GHCR as an OCI artifact and signs it
+# 6. creates the GitHub Release with notes, SBOMs and the chart
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write   # create the GitHub Release
+      packages: write   # push images and the chart to GHCR
+      id-token: write   # keyless signing (GitHub OIDC token -> Sigstore)
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/llm-gateway
+      MOCK_IMAGE: ghcr.io/${{ github.repository_owner }}/llm-gateway-mock
+      CHART_REPO: oci://ghcr.io/${{ github.repository_owner }}/charts
+      # The certificate identity every signature must carry.
+      SIGNER: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+      ISSUER: https://token.actions.githubusercontent.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile cross-compiles Go, so arm64 needs no QEMU emulation.
+      - name: gateway image (amd64 + arm64)
+        id: gateway
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: gateway
+          platforms: linux/amd64,linux/arm64
+          build-args: VERSION=${{ github.ref_name }}
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=Apache-2.0
+          provenance: mode=max
+          push: true
+      - name: mock image (amd64 + arm64)
+        id: mock
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: mockprovider
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ env.MOCK_IMAGE }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=Apache-2.0
+          provenance: mode=max
+          push: true
+
+      - name: SBOM of the gateway image (Syft, SPDX)
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.gateway.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-gateway.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: SBOM of the mock image (Syft, SPDX)
+        uses: anchore/sbom-action@dfcb83b97731532d72be422cbc51ee64adb6fd56 # v0.24.4
+        with:
+          image: ${{ env.MOCK_IMAGE }}@${{ steps.mock.outputs.digest }}
+          format: spdx-json
+          output-file: sbom-mock.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
+      - name: sign images and attach the SBOMs (keyless)
+        env:
+          GW_DIGEST: ${{ steps.gateway.outputs.digest }}
+          MOCK_DIGEST: ${{ steps.mock.outputs.digest }}
+        run: |
+          cosign sign --yes "$IMAGE@$GW_DIGEST"
+          cosign attest --yes --type spdxjson --predicate sbom-gateway.spdx.json "$IMAGE@$GW_DIGEST"
+          cosign sign --yes "$MOCK_IMAGE@$MOCK_DIGEST"
+          cosign attest --yes --type spdxjson --predicate sbom-mock.spdx.json "$MOCK_IMAGE@$MOCK_DIGEST"
+      - name: verify signatures and SBOM attestations
+        env:
+          GW_DIGEST: ${{ steps.gateway.outputs.digest }}
+          MOCK_DIGEST: ${{ steps.mock.outputs.digest }}
+        run: |
+          for ref in "$IMAGE@$GW_DIGEST" "$MOCK_IMAGE@$MOCK_DIGEST"; do
+            cosign verify --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$ref" > /dev/null
+            cosign verify-attestation --type spdxjson \
+              --certificate-identity "$SIGNER" --certificate-oidc-issuer "$ISSUER" "$ref" > /dev/null
+            echo "verified $ref"
+          done
+
+      - name: Helm chart to GHCR (OCI), signed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/ci/install-tools.sh helm
+          export PATH="$HOME/.local/bin:$PATH"
+          version="${GITHUB_REF_NAME#v}"
+          helm package deploy/helm/llm-gateway --version "$version" --app-version "$GITHUB_REF_NAME"
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "llm-gateway-$version.tgz" "$CHART_REPO" 2>&1 | tee push.log
+          digest=$(grep -oE 'sha256:[0-9a-f]{64}' push.log | head -1)
+          cosign sign --yes "${CHART_REPO#oci://}/llm-gateway@$digest"
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            sbom-gateway.spdx.json sbom-mock.spdx.json llm-gateway-*.tgz
