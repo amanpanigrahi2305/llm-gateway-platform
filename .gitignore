@@ -38,6 +38,8 @@ go.work.sum
 *.tfvars
 *.tfstate*
 .terraform/
+# Lock files belong to root configurations (examples, bootstrap), not modules.
+deploy/terraform/modules/**/.terraform.lock.hcl
 bin/
 dist/
 docs/evidence/*.har
