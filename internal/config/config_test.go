@@ -66,6 +66,16 @@ func TestParseValidConfigFillsDefaults(t *testing.T) {
 	}
 }
 
+func TestParseBedrockNeedsNoBaseURL(t *testing.T) {
+	c, err := Parse([]byte(strings.Replace(validYAML, "type: ollama", "type: bedrock\n    region: eu-west-1", 1)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if p := c.Providers["ollama"]; p.Type != TypeBedrock || p.Region != "eu-west-1" || p.BaseURL != "" {
+		t.Errorf("provider = %+v; want bedrock, eu-west-1, no base_url", p)
+	}
+}
+
 func TestParseRejectsBadConfig(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -76,6 +86,8 @@ func TestParseRejectsBadConfig(t *testing.T) {
 		{"typo in key", validYAML + "aliasses: {}\n", "field aliasses not found"},
 		{"unknown provider type", strings.Replace(validYAML, "type: ollama", "type: olama", 1), `unknown type "olama"`},
 		{"openai needs key env", strings.Replace(validYAML, "type: ollama", "type: openai", 1), "api_key_env is required"},
+		{"bedrock needs region", strings.Replace(validYAML, "type: ollama", "type: bedrock", 1), "region is required for type bedrock"},
+		{"bedrock takes no API key", strings.Replace(validYAML, "type: ollama", "type: bedrock\n    region: us-east-1\n    api_key_env: X", 1), "not api_key_env"},
 		{"target without slash", strings.Replace(validYAML, `"mock/mock-1", `, `"mock-1", `, 1), "must look like provider/model"},
 		{"unknown provider in alias", strings.Replace(validYAML, `["mock/mock-1", `, `["nope/mock-1", `, 1), `unknown provider "nope"`},
 		{"missing price", strings.Replace(validYAML, `  "mock/mock-1": {input_per_million: 1, output_per_million: 2}`+"\n", "", 1), `no price for "mock/mock-1"`},

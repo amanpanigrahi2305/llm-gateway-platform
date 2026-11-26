@@ -23,6 +23,7 @@ const (
 	TypeAnthropic = "anthropic"
 	TypeOllama    = "ollama"
 	TypeMock      = "mock"
+	TypeBedrock   = "bedrock" // Amazon Bedrock Converse API; AWS credentials, no API key
 )
 
 // Config is the whole config file.
@@ -109,6 +110,7 @@ type Provider struct {
 	ConnectTimeout time.Duration `yaml:"connect_timeout"` // TCP connect and TLS handshake
 	TTFTTimeout    time.Duration `yaml:"ttft_timeout"`    // streaming: longest wait for the first token
 	Timeout        time.Duration `yaml:"timeout"`         // total time for one upstream call
+	Region         string        `yaml:"region"`          // AWS region (bedrock only)
 }
 
 // Price is the cost in USD per 1 million tokens.
@@ -282,11 +284,19 @@ func (c *Config) validate() []string {
 				add("providers.%s: api_key_env is required for type %q", name, p.Type)
 			}
 		case TypeOllama, TypeMock:
+		case TypeBedrock:
+			if p.Region == "" {
+				add("providers.%s: region is required for type bedrock", name)
+			}
+			if p.APIKeyEnv != "" {
+				add("providers.%s: bedrock uses AWS credentials (for example EKS Pod Identity), not api_key_env", name)
+			}
 		default:
 			known = false
-			add("providers.%s: unknown type %q (use openai, anthropic, ollama or mock)", name, p.Type)
+			add("providers.%s: unknown type %q (use openai, anthropic, bedrock, ollama or mock)", name, p.Type)
 		}
-		if known && p.BaseURL == "" {
+		// Bedrock's endpoint comes from the region; base_url only overrides it.
+		if known && p.BaseURL == "" && p.Type != TypeBedrock {
 			add("providers.%s: base_url is required", name)
 		}
 		if strings.Contains(name, "/") {

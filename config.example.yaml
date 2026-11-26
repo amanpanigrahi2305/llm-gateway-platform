@@ -30,6 +30,10 @@ providers:
   # openai:
   #   type: openai
   #   api_key_env: OPENAI_API_KEY
+  # bedrock:              # Amazon Bedrock Converse API: one API for every Bedrock model.
+  #   type: bedrock       # AWS credentials from the default chain (EKS Pod Identity on
+  #   region: us-east-1   # EKS, env vars or ~/.aws locally); no API key. Needs
+  #                       # bedrock:InvokeModel and InvokeModelWithResponseStream.
 
 # Clients ask for an alias, never a raw model name. Each alias is an ordered list
 # of provider/model targets: the first healthy one serves, the rest are failover.

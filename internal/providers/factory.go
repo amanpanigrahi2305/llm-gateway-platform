@@ -24,6 +24,8 @@ func New(name string, cfg config.Provider, getenv func(string) string) (Provider
 		return NewOpenAICompat(name, cfg.BaseURL, apiKey, t, false), nil
 	case config.TypeAnthropic:
 		return NewAnthropic(name, cfg.BaseURL, apiKey, t), nil
+	case config.TypeBedrock:
+		return NewBedrock(name, cfg.Region, cfg.BaseURL, t)
 	}
 	return nil, fmt.Errorf("provider %s: unsupported type %q", name, cfg.Type)
 }
