@@ -1,0 +1,42 @@
+# Argo CD Application: keeps namespace llm-gateway equal to the chart plus two
+# values files in git. A release is a commit that changes kind-release.yaml.
+# Local repo: the in-cluster git server (deploy/gitops/gitea.yaml). For a real
+# cluster, set repoURL to the GitHub repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: llm-gateway
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://gitea.gitops.svc.cluster.local:3000/gitops/llm-gateway-platform.git
+    targetRevision: main
+    path: deploy/helm/llm-gateway
+    helm:
+      releaseName: llm-gateway
+      valueFiles:
+        - ../../kind/values.yaml
+        - ../../gitops/kind-release.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: llm-gateway
+  syncPolicy:
+    automated:
+      prune: true      # delete what was removed from git
+      selfHeal: true   # undo changes made by hand (drift)
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    # Argo CD renders charts offline, where Helm's lookup finds nothing, so the
+    # dev Postgres password would be new on every render. Keep the first one.
+    - group: ""
+      kind: Secret
+      name: llm-gateway-postgres
+      jsonPointers: [/data]
+    # Argo Rollouts adds the canary's pod-template hash to this selector.
+    - group: ""
+      kind: Service
+      name: llm-gateway-canary
+      jsonPointers: [/spec/selector/rollouts-pod-template-hash]

@@ -1,0 +1,91 @@
+# Dev only: a small git server (Gitea) inside kind. Argo CD follows a repo on
+# it, so release and rollback tests never push test commits to GitHub. In a
+# real setup Argo CD points at GitHub instead (one line in application.yaml).
+# Repos are created on the first push and are readable without a login inside
+# the cluster; pushing needs the admin password (Secret gitea-admin).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitea
+  namespace: gitops
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: gitops
+  labels:
+    app.kubernetes.io/name: gitea
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # one pod owns the volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitea
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitea
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: gitea
+          image: gitea/gitea:28.4.0-rootless
+          env:
+            - {name: GITEA__security__INSTALL_LOCK, value: "true"}
+            - {name: GITEA__database__DB_TYPE, value: sqlite3}
+            - {name: GITEA__server__ROOT_URL, value: "http://gitea.gitops.svc.cluster.local:3000/"}
+            - {name: GITEA__server__DISABLE_SSH, value: "true"}
+            - {name: GITEA__service__DISABLE_REGISTRATION, value: "true"}
+            - {name: GITEA__repository__ENABLE_PUSH_CREATE_USER, value: "true"}
+            - {name: GITEA__repository__DEFAULT_PUSH_CREATE_PRIVATE, value: "false"}
+            # Push webhooks to Argo CD inside the cluster (self-signed TLS).
+            - {name: GITEA__webhook__ALLOWED_HOST_LIST, value: "*.svc.cluster.local"}
+            - {name: GITEA__webhook__SKIP_TLS_VERIFY, value: "true"}
+            - {name: GITEA__log__LEVEL, value: warn}
+          ports:
+            - {name: http, containerPort: 3000}
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - {name: gitea, mountPath: /var/lib/gitea, subPath: data}
+            - {name: gitea, mountPath: /etc/gitea, subPath: config}
+      volumes:
+        - name: gitea
+          persistentVolumeClaim:
+            claimName: gitea
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: gitops
+spec:
+  selector:
+    app.kubernetes.io/name: gitea
+  ports:
+    - {name: http, port: 3000, targetPort: http}

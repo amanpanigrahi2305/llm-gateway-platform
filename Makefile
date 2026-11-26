@@ -11,7 +11,7 @@ KIND_NAME  := llm-gateway
 METRICS_SERVER_VERSION := v0.9.1
 
 .PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
-	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy smoke scan kind-down
+	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy kind-load gitops-up smoke scan kind-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -88,6 +88,13 @@ deploy: docker-build ## build the images, load them into kind, install the chart
 	kind load docker-image $(IMAGE):$(TAG) $(MOCK_IMAGE):$(TAG) --name $(KIND_NAME)
 	helm upgrade --install llm-gateway deploy/helm/llm-gateway -f deploy/kind/values.yaml \
 	  --set image.tag=$(TAG) --set dev.mockProviders.image.tag=$(TAG) --wait --timeout 5m
+
+kind-load: ## build both images as $(TAG) and load them into kind (for GitOps releases)
+	$(MAKE) docker-build TAG=$(TAG) VERSION=$(TAG)
+	kind load docker-image $(IMAGE):$(TAG) $(MOCK_IMAGE):$(TAG) --name $(KIND_NAME)
+
+gitops-up: ## Argo CD, Argo Rollouts, an in-cluster git server and the gateway Application on kind
+	scripts/gitops/up.sh
 
 smoke: ## smoke test the gateway on kind (after deploy)
 	scripts/ci/kind-smoke.sh

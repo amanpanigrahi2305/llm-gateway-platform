@@ -1,0 +1,30 @@
+# The release running on the local kind cluster, on top of deploy/kind/values.yaml.
+# Argo CD follows this file: a release is a commit that changes it, usually
+# image.tag. Images are built and loaded into kind first:
+#   make kind-load TAG=gitops-2
+image:
+  tag: gitops-1
+
+# Canary with Argo Rollouts. 10 replicas so that the 10% step is one pod.
+autoscaling:
+  enabled: false
+replicaCount: 10
+rollout:
+  enabled: true
+  analysis:
+    key: sk-gw-local-demo-only   # the public demo key of deploy/kind/values.yaml
+
+# A third mock that fails half of its requests: the upstream a bad release
+# points at in the rollback test.
+dev:
+  mockProviders:
+    image: {tag: gitops-1}
+    names: [mock-a, mock-b, mock-flaky]
+    args:
+      mock-flaky: ["-error-rate", "0.5"]
+
+config:
+  providers:
+    mock-flaky: {type: mock, base_url: "http://llm-gateway-mock-flaky:9090/v1", ttft_timeout: 5s}
+  prices:
+    "mock-flaky/mock-1": {input_per_million: 1.00, output_per_million: 2.00}
