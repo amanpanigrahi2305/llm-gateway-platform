@@ -461,7 +461,130 @@ _TBD_
 _TBD_
 
 ## Phase 7 — CI / GitOps / release
-_TBD_
+
+Evidence: `docs/evidence/phase7a-supply-chain.md` (release steps, run locally)
+and `docs/evidence/phase7a-gitops.md` (Argo CD and Argo Rollouts on kind).
+
+### CI on every push and pull request
+**Decision:** four parallel jobs in `.github/workflows/ci.yml`: Go (vet,
+golangci-lint, race tests), checks (gitleaks over every commit, actionlint, helm
+lint, Checkov), image (build, Trivy fails on any CRITICAL CVE) and kind (create
+the 3-node cluster, install the chart, run the smoke test against the mocks).
+**Why a real cluster in CI:** `helm lint` and Checkov read the chart; only an
+install shows that the pods start, the probes pass and requests flow.
+**Trade-off:** the kind job takes several minutes. It runs in parallel with the
+others, so it sets the total time instead of adding to it.
+
+### Pin what CI runs: actions by commit SHA, tools by checksum
+**Decision:** every third-party action is pinned to a full commit SHA (the tag is
+only a comment). Trivy, gitleaks, actionlint, kind and helm are not installed by
+actions at all: `scripts/ci/install-tools.sh` downloads fixed versions and checks
+each file against a SHA-256 kept in the repo. The workflow token is read-only.
+**Why:** a tag can be moved to other code, and a compromised action runs with the
+job's token and secrets. A commit SHA cannot be moved, and a checksum catches a
+replaced download.
+**Trade-off:** upgrades are manual (new SHA or checksum). Dependabot can open
+those pull requests.
+**Measured:** a deliberately wrong checksum made the installer stop.
+
+### Scanners: fix what is real, skip the rest in writing
+**Decision:** Trivy on both images (fail on CRITICAL); Checkov on the
+Dockerfile, the chart and the workflows. Checks that do not apply are skipped in
+`.checkov.yaml`, each with its reason (Docker HEALTHCHECK, which Kubernetes
+ignores; a hard-coded namespace, which a chart must not have; pull policy
+`Always` and image digests, covered by immutable tags and `image.digest`).
+**What the first run found:** no NetworkPolicy. The chart now has one (only the
+HTTP port is open; `ingressFrom` can limit who connects). kind's CNI enforces
+it: with `ingressFrom` set to one pod label, a pod without the label was blocked.
+**Measured:** Trivy found 0 vulnerabilities in both images (Debian 13.8
+distroless and the Go binaries); Checkov: 0 failed (Dockerfile 48 passed,
+workflows 108, chart 87).
+
+### Releases: keyless signing and signed SBOMs
+**Decision:** on a `v*` tag, `.github/workflows/release.yml` builds amd64 and
+arm64 images, pushes them to GHCR with the built-in token, makes an SPDX SBOM per
+image with Syft, signs each image with cosign **keyless** and attaches the SBOM
+as a signed attestation, verifies both with the exact workflow identity, pushes
+the Helm chart to GHCR as an OCI artifact and signs it.
+**Options:** a long-lived cosign key in a repository secret; no signing.
+**Why keyless:** there is no private key to leak or rotate. cosign gets a
+10-minute certificate from Sigstore for this workflow through GitHub's OIDC
+token, and the signature is recorded in Sigstore's public transparency log, so
+anyone can check which workflow on which tag signed an image.
+**Trade-off:** the log is public, so it shows the repo and workflow names (fine
+for a public repo), and signing depends on Sigstore being up. Verifiers must
+pin the identity (`--certificate-identity`), or any GitHub workflow's signature
+would pass.
+**Tested locally first** (by choice, before any public tag): the same steps
+against a throwaway registry, with a local key and a signing config that lists
+no transparency log, so nothing was published. Signatures and the SBOM
+attestation verified; verification **failed** for the wrong key, for an unsigned
+image and after the release tag was moved to another image, because signatures
+belong to a digest, not a tag.
+
+### GitOps: Argo CD pulls, CI never touches the cluster
+**Decision:** Argo CD watches the chart and two values files in git and applies
+every change (automated sync, prune, self-heal). A release is a commit that
+changes `deploy/gitops/kind-release.yaml`, usually the image tag.
+**Options:** CI runs `helm upgrade` with cluster credentials (push model); Flux.
+**Why:** the cluster pulls, so CI holds no cluster credentials and a stolen CI
+token cannot deploy. Git history is the audit log, rollback is `git revert`,
+and changes made by hand are undone.
+**Trade-off:** one more system to run. Emergency fixes must also go through git
+(or auto-sync must be paused), or Argo CD undoes them.
+**Measured:** drift undone in 1.2–7.2 s (deleted NetworkPolicy, loosened PDB,
+scaled Rollout). Push to sync about 4 s with a webhook; without it Argo CD polls
+every 3 minutes, and syncs came 100–238 s after the push.
+
+### A git server inside kind for release tests
+**Decision:** Gitea runs in the cluster and holds a copy of the repo; tests push
+release commits there. A real setup points Argo CD at GitHub (one line).
+**Why:** the tests need several commits (good, bad, revert), and a public repo
+should not collect test commits.
+**Two gotchas found:** Gitea 28 calls private addresses only when they are
+allowed by IP range (`[security].ALLOWED_HOST_LIST`); with a host name the
+webhook was refused and Argo CD fell back to polling. And Argo CD renders Helm
+charts offline, where `lookup` finds nothing, so the dev Postgres password
+would change on every render; the Application ignores that Secret's data.
+
+### Canary with Argo Rollouts and a canary check
+**Decision:** a Rollout with steps 10% → check → 50% → check → 100%. The check is
+a Job that sends 100 requests to the canary pods only (through a canary Service)
+and fails on more than 1 non-200 answer. A failed check aborts the rollout: the
+canary pods go and the stable version keeps all traffic.
+**Options:** analysis on the Prometheus error rate of real traffic (needs the
+Phase 4 metrics; planned); blue-green; a traffic router (Gateway API plugin,
+AWS ALB) for exact percentages.
+**Why a Job check now:** it needs no metrics system, and it tests only the new
+version, so one bad pod is not hidden in the average of ten good ones.
+**Trade-off:** a synthetic check only finds what it sends (one alias, short
+prompts); the real-traffic error rate catches more. Without a traffic router
+the traffic share follows the pod count, so the kind release runs 10 replicas
+(10% = 1 pod); with 2 replicas a "10%" step would really be a third.
+**Measured:** good release promoted in 55.9 s with 0 failed requests; bad
+release aborted 21.4 s after the push, and users saw 29 errors in 3,920
+requests (0.74%) while it ran.
+
+### One immutable ConfigMap per config version
+**What went wrong first:** a canary of a config change was not isolated. All
+revisions read one ConfigMap and the bad release changed it. When the canary
+was aborted, Argo Rollouts scaled the stable ReplicaSet back up; the new
+"stable" pod read the bad config and failed 7 of 20 requests. A `git revert`
+fixed the ConfigMap but not that pod (still 5 of 20 failed), because it had
+read the file at start. The same happens to any old-version pod that starts
+during a rollout: an HPA scale-up, a rescheduled pod, a node drain.
+**Decision:** the ConfigMap is named `<release>-config-<hash of the config>`
+and is immutable, so each ReplicaSet keeps the config it was released with.
+Old versions are kept for old ReplicaSets (`helm.sh/resource-policy: keep`;
+for Argo CD `Prune=false` and `IgnoreExtraneous`).
+**Options:** the config inside the pod spec (an env var); Kustomize's
+`configMapGenerator` (the same idea); reloading config live (pods would change
+behavior without any rollout).
+**Trade-off:** old ConfigMaps pile up, one small object per config change,
+until removed (label `app.kubernetes.io/component=config`). The first upgrade
+to this scheme deletes the old fixed-name ConfigMap.
+**Measured:** after an aborted bad release, 10 of 10 stable pods answered
+20/20; a hand edit of the ConfigMap was rejected (`field is immutable`).
 
 ## Phase 9 — README and docs
 _TBD_
