@@ -1,0 +1,8 @@
+# Copy to backend.hcl (git-ignored) with the bucket from ../../bootstrap
+# (terraform -chdir=../../bootstrap output -raw backend_config), then:
+#   terraform init -backend-config=backend.hcl
+bucket       = "llm-gw-tfstate-<account-id>-us-east-1"
+key          = "aws-complete/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true
