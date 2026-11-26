@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+// A generated password with URL-breaking characters is used as is, without
+// putting it in the URL. No database is needed: the pool connects lazily.
+func TestPasswordReplacesTheURLPassword(t *testing.T) {
+	const pw = `a#b?c%d:e&f`
+	p, err := NewPostgres(t.Context(), "postgres://gateway@db.example.invalid:5432/gateway?sslmode=require", pw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if got := p.pool.Config().ConnConfig.Password; got != pw {
+		t.Fatalf("password = %q, want %q", got, pw)
+	}
+	if got := p.pool.Config().ConnConfig.Host; got != "db.example.invalid" {
+		t.Fatalf("host = %q", got)
+	}
+}
+
 // TestPostgres runs against a real Postgres when GATEWAY_TEST_DATABASE_URL is
 // set. It writes two rows with a unique request ID prefix and deletes them.
 func TestPostgres(t *testing.T) {
@@ -15,7 +32,7 @@ func TestPostgres(t *testing.T) {
 		t.Skip("set GATEWAY_TEST_DATABASE_URL to run against a real Postgres")
 	}
 	ctx := context.Background()
-	p, err := NewPostgres(ctx, url)
+	p, err := NewPostgres(ctx, url, "")
 	if err != nil {
 		t.Fatal(err)
 	}

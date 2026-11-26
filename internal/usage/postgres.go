@@ -29,9 +29,18 @@ type Postgres struct {
 }
 
 // NewPostgres prepares a connection pool. It does not connect yet, so the
-// gateway can start while the database is down.
-func NewPostgres(ctx context.Context, url string) (*Postgres, error) {
-	pool, err := pgxpool.New(ctx, url)
+// gateway can start while the database is down. A non-empty password replaces
+// the one in the URL: generated passwords (for example from RDS) can contain
+// characters such as # ? % that break a URL.
+func NewPostgres(ctx context.Context, url, password string) (*Postgres, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, err
+	}
+	if password != "" {
+		cfg.ConnConfig.Password = password
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

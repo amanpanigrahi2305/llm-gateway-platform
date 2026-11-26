@@ -53,15 +53,28 @@ spec:
         {{- with .Values.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with (include "llm-gateway.secretName" .) }}
+      {{- $secretName := include "llm-gateway.secretName" . }}
+      {{- if or $secretName .Values.secretsStore.enabled }}
       envFrom:
+        {{- with $secretName }}
         - secretRef:
             name: {{ . }}
+        {{- end }}
+        {{- if .Values.secretsStore.enabled }}
+        # Synced from AWS Secrets Manager when the volume below is mounted.
+        - secretRef:
+            name: {{ include "llm-gateway.fullname" . }}-store
+        {{- end }}
       {{- end }}
       volumeMounts:
         - name: config
           mountPath: /etc/llm-gateway
           readOnly: true
+        {{- if .Values.secretsStore.enabled }}
+        - name: secrets-store
+          mountPath: /mnt/secrets-store
+          readOnly: true
+        {{- end }}
       securityContext:
         {{- include "llm-gateway.containerSecurity" . | nindent 8 }}
       # startup: give the process up to 30 s to start; the other probes wait for it.
@@ -89,6 +102,14 @@ spec:
     - name: config
       configMap:
         name: {{ include "llm-gateway.configName" . }}
+    {{- if .Values.secretsStore.enabled }}
+    - name: secrets-store
+      csi:
+        driver: secrets-store.csi.k8s.io
+        readOnly: true
+        volumeAttributes:
+          secretProviderClass: {{ include "llm-gateway.fullname" . }}
+    {{- end }}
   {{- if .Values.topologySpread.enabled }}
   topologySpreadConstraints:
     - maxSkew: {{ .Values.topologySpread.maxSkew }}

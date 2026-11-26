@@ -78,6 +78,8 @@ policies:
 # Remove database_url_env to turn the ledger off (records still go to the log).
 ledger:
   database_url_env: GATEWAY_DATABASE_URL   # env var with the URL (it holds a password)
+  # password_env: GATEWAY_DB_PASSWORD      # optional: env var whose value replaces the
+  #                                        # URL's password (for generated passwords with # ? %)
   buffer_size: 10000
   batch_size: 500
   flush_interval: 1s

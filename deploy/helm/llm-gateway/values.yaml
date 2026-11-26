@@ -59,6 +59,24 @@ service:
   port: 80
   nodePort: null               # only for type NodePort
 
+# Optional Ingress, e.g. an AWS ALB (className: alb) with the WAF ACL and the
+# ACM certificate in annotations (see deploy/terraform/examples/aws-complete).
+ingress:
+  enabled: false
+  className: ""
+  host: ""                     # empty: any host name
+  annotations: {}
+  tls: []                      # for controllers that read TLS from the Ingress
+
+# Optional: secrets from AWS Secrets Manager through the Secrets Store CSI
+# Driver and its AWS provider (both must be installed), read with the pod's
+# EKS Pod Identity. Each object becomes an environment variable.
+secretsStore:
+  enabled: false
+  objects: []
+#  - {name: "arn:aws:secretsmanager:...:secret:llm-gw/openai-api-key", env: OPENAI_API_KEY}
+#  - {name: "arn:aws:secretsmanager:...:secret:rds!db-...", env: GATEWAY_DB_PASSWORD, jmesPath: password}
+
 serviceAccount:
   create: true
   name: ""

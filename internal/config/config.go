@@ -42,10 +42,13 @@ type Config struct {
 // Ledger configures the Postgres usage ledger: one row per request,
 // written in the background. It is off when database_url_env is empty.
 type Ledger struct {
-	DatabaseURLEnv string        `yaml:"database_url_env"` // env var with the Postgres URL (it holds a password)
-	BufferSize     int           `yaml:"buffer_size"`      // records waiting to be written; when full, new ones are dropped
-	BatchSize      int           `yaml:"batch_size"`       // rows per write
-	FlushInterval  time.Duration `yaml:"flush_interval"`   // longest wait before a partial batch is written
+	DatabaseURLEnv string `yaml:"database_url_env"` // env var with the Postgres URL (it holds a password)
+	// PasswordEnv names an env var whose value replaces the URL's password.
+	// Use it for generated passwords with characters that break a URL.
+	PasswordEnv   string        `yaml:"password_env"`
+	BufferSize    int           `yaml:"buffer_size"`    // records waiting to be written; when full, new ones are dropped
+	BatchSize     int           `yaml:"batch_size"`     // rows per write
+	FlushInterval time.Duration `yaml:"flush_interval"` // longest wait before a partial batch is written
 }
 
 // Cache configures the exact-match response cache. It is off by default,

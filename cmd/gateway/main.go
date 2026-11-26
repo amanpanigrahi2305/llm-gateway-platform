@@ -238,7 +238,13 @@ func newLedger(cfg *config.Config, log *slog.Logger) (*usage.Ledger, func(), err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	db, err := usage.NewPostgres(ctx, url)
+	password := ""
+	if pe := cfg.Ledger.PasswordEnv; pe != "" {
+		if password = os.Getenv(pe); password == "" {
+			return nil, nil, fmt.Errorf("ledger: environment variable %s is empty", pe)
+		}
+	}
+	db, err := usage.NewPostgres(ctx, url, password)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ledger: %w", err)
 	}
