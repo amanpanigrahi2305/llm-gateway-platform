@@ -4,7 +4,11 @@
 //
 //   k6 run -e GATEWAY_URL=http://127.0.0.1:8088 -e GATEWAY_KEY=sk-gw-... loadtest/steady.js
 //
-// Options (with -e): GATEWAY_URL, MODEL, VUS, DURATION.
+// Options (with -e): GATEWAY_URL, MODEL, VUS, DURATION, RATE.
+// - Without RATE: VUS virtual users send requests back to back (a closed
+//   model: fast failures make a user send more, so counts favor errors).
+// - With RATE: exactly RATE requests per second whatever the answers are (an
+//   open model, like real users), so the error share is the user impact.
 // Each request is counted once in "outcome" with a result tag:
 //   ok          status 200
 //   http_<code> any other HTTP status (for example http_502)
@@ -14,20 +18,34 @@ import { check } from 'k6';
 import { Counter } from 'k6/metrics';
 
 const outcome = new Counter('outcome');
+const rate = Number(__ENV.RATE || 0);
+const duration = __ENV.DURATION || '60s';
 
-export const options = {
-  vus: Number(__ENV.VUS || 20),
-  duration: __ENV.DURATION || '60s',
-  thresholds: {
-    http_req_failed: ['rate<0.01'],
-    // Listed so the summary shows each count, even when it is zero.
-    'outcome{result:ok}': ['count>=0'],
-    'outcome{result:conn_error}': ['count>=0'],
-    'outcome{result:http_502}': ['count>=0'],
-    'outcome{result:http_503}': ['count>=0'],
-    'outcome{result:http_504}': ['count>=0'],
-  },
+const thresholds = {
+  http_req_failed: ['rate<0.01'],
+  // Listed so the summary shows each count, even when it is zero.
+  'outcome{result:ok}': ['count>=0'],
+  'outcome{result:conn_error}': ['count>=0'],
+  'outcome{result:http_502}': ['count>=0'],
+  'outcome{result:http_503}': ['count>=0'],
+  'outcome{result:http_504}': ['count>=0'],
 };
+
+export const options = rate > 0
+  ? {
+      scenarios: {
+        steady: {
+          executor: 'constant-arrival-rate',
+          rate,
+          timeUnit: '1s',
+          duration,
+          preAllocatedVUs: Number(__ENV.VUS || 50),
+          maxVUs: Number(__ENV.MAX_VUS || 200),
+        },
+      },
+      thresholds,
+    }
+  : { vus: Number(__ENV.VUS || 20), duration, thresholds };
 
 const url = (__ENV.GATEWAY_URL || 'http://127.0.0.1:8088') + '/v1/chat/completions';
 const params = {
