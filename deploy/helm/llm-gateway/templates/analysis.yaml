@@ -1,0 +1,97 @@
+{{- if .Values.rollout.enabled }}
+{{- $name := printf "%s-canary-check" (include "llm-gateway.fullname" .) }}
+{{- $a := .Values.rollout.analysis }}
+# Canary check: a Job sends rollout.analysis.requests chat requests to the
+# canary pods only (the canary Service) and fails when more than
+# rollout.analysis.maxFailed of them do not return 200. A failed check aborts
+# the rollout.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  metrics:
+    - name: canary-requests
+      failureLimit: 0
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: {{ $a.timeoutSeconds }}
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: {{ $name }}
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              spec:
+                restartPolicy: Never
+                automountServiceAccountToken: false
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 100   # curl_user in the curl image
+                  runAsGroup: 101
+                  seccompProfile: {type: RuntimeDefault}
+                containers:
+                  - name: check
+                    image: {{ $a.image | quote }}
+                    securityContext:
+                      {{- include "llm-gateway.containerSecurity" . | nindent 22 }}
+                    resources:
+                      requests: {cpu: 50m, memory: 16Mi}
+                      limits: {cpu: 500m, memory: 64Mi}
+                    env:
+                      - {name: URL, value: "http://{{ include "llm-gateway.fullname" . }}-canary/v1/chat/completions"}
+                      - {name: MODEL, value: {{ $a.model | quote }}}
+                      - {name: REQUESTS, value: {{ $a.requests | quote }}}
+                      - {name: MAX_FAILED, value: {{ $a.maxFailed | quote }}}
+                      - name: KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: {{ $a.keySecret | default $name }}
+                            key: key
+                    command: ["sh", "-c"]
+                    args:
+                      - |
+                        body="{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"canary check\"}],\"max_tokens\":5}"
+                        failed=0; i=0
+                        while [ "$i" -lt "$REQUESTS" ]; do
+                          code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' \
+                            -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d "$body" "$URL")
+                          [ "$code" = 200 ] || failed=$((failed + 1))
+                          i=$((i + 1))
+                        done
+                        echo "canary check: $REQUESTS requests, $failed not 200 (allowed: $MAX_FAILED)"
+                        [ "$failed" -le "$MAX_FAILED" ]
+{{- if and $a.key (not $a.keySecret) }}
+---
+# The client key the check uses. For local clusters only: in production put
+# the key in your own Secret and set rollout.analysis.keySecret.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  key: {{ $a.key | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}-canary
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  # Argo Rollouts adds the canary's rollouts-pod-template-hash to this selector.
+  selector:
+    {{- include "llm-gateway.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}

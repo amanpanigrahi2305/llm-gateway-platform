@@ -1,0 +1,40 @@
+{{- if .Values.rollout.enabled }}
+# Argo Rollouts canary instead of a Deployment. A new version gets a share of
+# the pods step by step (rollout.steps). Without a traffic router, the share
+# of requests follows the share of pods, so use enough replicas for small
+# steps to mean something (10 replicas: 10% = 1 pod). A failed analysis
+# aborts the rollout: the canary pods are removed and the stable version
+# keeps all traffic.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "llm-gateway.fullname" . }}
+  labels:
+    {{- include "llm-gateway.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "llm-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "llm-gateway.podTemplate" . | nindent 4 }}
+  strategy:
+    canary:
+      # Selects only the canary pods, so the analysis tests the new version.
+      canaryService: {{ include "llm-gateway.fullname" . }}-canary
+      maxUnavailable: 0
+      maxSurge: {{ .Values.rollout.maxSurge | quote }}
+      steps:
+        {{- range .Values.rollout.steps }}
+        {{- if hasKey . "analysis" }}
+        - analysis:
+            templates:
+              - templateName: {{ include "llm-gateway.fullname" $ }}-{{ .analysis }}
+        {{- else }}
+        - {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- end }}
+{{- end }}
