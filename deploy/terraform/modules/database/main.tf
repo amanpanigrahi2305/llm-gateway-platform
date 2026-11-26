@@ -23,11 +23,13 @@ resource "aws_security_group" "this" {
   tags        = merge(var.tags, { Name = "${var.name}-postgres" })
 }
 
+# count, not for_each: the group IDs (e.g. the EKS cluster's) are often unknown
+# until apply, and for_each needs known keys at plan time; the list length is known.
 resource "aws_vpc_security_group_ingress_rule" "postgres" {
-  for_each                     = toset(var.allowed_security_group_ids)
+  count                        = length(var.allowed_security_group_ids)
   security_group_id            = aws_security_group.this.id
   description                  = "Postgres from the cluster"
-  referenced_security_group_id = each.value
+  referenced_security_group_id = var.allowed_security_group_ids[count.index]
   ip_protocol                  = "tcp"
   from_port                    = 5432
   to_port                      = 5432

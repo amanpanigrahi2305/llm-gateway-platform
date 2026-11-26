@@ -27,11 +27,13 @@ resource "aws_security_group" "this" {
   tags        = merge(var.tags, { Name = "${var.name}-redis" })
 }
 
+# count, not for_each: the group IDs (e.g. the EKS cluster's) are often unknown
+# until apply, and for_each needs known keys at plan time; the list length is known.
 resource "aws_vpc_security_group_ingress_rule" "redis" {
-  for_each                     = toset(var.allowed_security_group_ids)
+  count                        = length(var.allowed_security_group_ids)
   security_group_id            = aws_security_group.this.id
   description                  = "Redis TLS from the cluster"
-  referenced_security_group_id = each.value
+  referenced_security_group_id = var.allowed_security_group_ids[count.index]
   ip_protocol                  = "tcp"
   from_port                    = 6379
   to_port                      = 6379
