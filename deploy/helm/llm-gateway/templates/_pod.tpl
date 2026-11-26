@@ -4,12 +4,10 @@ Rollout (rollout.enabled). Include it under `template:` with nindent 4.
 */}}
 {{- define "llm-gateway.podTemplate" -}}
 metadata:
+  {{- with .Values.podAnnotations }}
   annotations:
-    # A new config gives a new checksum, and that rolls the pods.
-    checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
-    {{- with .Values.podAnnotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
+  {{- end }}
   labels:
     {{- include "llm-gateway.selectorLabels" . | nindent 4 }}
     {{- with .Values.podLabels }}
@@ -87,9 +85,10 @@ spec:
       resources:
         {{- toYaml .Values.resources | nindent 8 }}
   volumes:
+    # A new config has a new ConfigMap name, and that rolls the pods.
     - name: config
       configMap:
-        name: {{ include "llm-gateway.fullname" . }}
+        name: {{ include "llm-gateway.configName" . }}
   {{- if .Values.topologySpread.enabled }}
   topologySpreadConstraints:
     - maxSkew: {{ .Values.topologySpread.maxSkew }}

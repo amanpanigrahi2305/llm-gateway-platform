@@ -1,9 +1,21 @@
+# One immutable ConfigMap per config version, named by a hash of its content.
+# Each ReplicaSet keeps pointing at the config it was released with, so a pod
+# of the old version that starts during a rollout (scale-up, a rescheduled pod,
+# a canary abort) gets the old config, not the new one. Old versions are kept
+# (not deleted on upgrade or by Argo CD) because old ReplicaSets may still need
+# them; remove unused ones with the label app.kubernetes.io/component=config.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "llm-gateway.fullname" . }}
+  name: {{ include "llm-gateway.configName" . }}
   labels:
     {{- include "llm-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: config
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+immutable: true
 data:
   config.yaml: |
     {{- toYaml .Values.config | nindent 4 }}

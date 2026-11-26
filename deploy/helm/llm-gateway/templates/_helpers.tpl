@@ -38,6 +38,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 {{- end -}}
 
+{{/* The ConfigMap of this config version: the name ends with a hash of the config. */}}
+{{- define "llm-gateway.configName" -}}
+{{- printf "%s-config-%s" (include "llm-gateway.fullname" .) (toYaml .Values.config | sha256sum | trunc 10) -}}
+{{- end -}}
+
 {{/* The gateway image: by digest when image.digest is set, else by tag. */}}
 {{- define "llm-gateway.image" -}}
 {{- if .Values.image.digest -}}
