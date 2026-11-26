@@ -57,7 +57,9 @@ spec:
             - {name: GITEA__repository__ENABLE_PUSH_CREATE_USER, value: "true"}
             - {name: GITEA__repository__DEFAULT_PUSH_CREATE_PRIVATE, value: "false"}
             # Push webhooks to Argo CD inside the cluster (self-signed TLS).
-            - {name: GITEA__webhook__ALLOWED_HOST_LIST, value: "*.svc.cluster.local"}
+            # Gitea only calls private addresses listed by IP range: this is
+            # kind's Service range, where argocd-server's ClusterIP lives.
+            - {name: GITEA__security__ALLOWED_HOST_LIST, value: "10.96.0.0/12"}
             - {name: GITEA__webhook__SKIP_TLS_VERIFY, value: "true"}
             - {name: GITEA__log__LEVEL, value: warn}
           ports:
