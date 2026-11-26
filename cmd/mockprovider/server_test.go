@@ -126,6 +126,22 @@ func TestOutageSwitchAndReset(t *testing.T) {
 	}
 }
 
+func TestResetReturnsToStartSettings(t *testing.T) {
+	start := defaultSettings()
+	start.TTFTMS, start.TokensPerSec, start.ErrorRate = 0, 0, 1 // a mock started with -error-rate 1
+	srv := httptest.NewServer(newServerWith(start).routes())
+	t.Cleanup(srv.Close)
+
+	do(t, "PATCH", srv.URL+"/admin/settings", `{"error_rate":0}`)
+	if resp := do(t, "POST", srv.URL+"/v1/chat/completions", helloRequest); resp.StatusCode != 200 {
+		t.Fatalf("status with error_rate 0 = %d, want 200", resp.StatusCode)
+	}
+	do(t, "POST", srv.URL+"/admin/reset", "")
+	if resp := do(t, "POST", srv.URL+"/v1/chat/completions", helloRequest); resp.StatusCode != 500 {
+		t.Fatalf("status after reset = %d, want 500 (back to the start error rate)", resp.StatusCode)
+	}
+}
+
 func TestInjected429HasRetryAfter(t *testing.T) {
 	srv := newTestServer(t, func(s *Settings) { s.ErrorRate, s.ErrorStatus = 1, 429 })
 	resp := do(t, "POST", srv.URL+"/v1/chat/completions", helloRequest)

@@ -32,7 +32,12 @@ spec:
         - name: mock
           image: "{{ $m.image.repository }}:{{ $m.image.tag | default $root.Chart.AppVersion }}"
           imagePullPolicy: {{ $m.image.pullPolicy }}
-          args: ["-addr", ":9090"]
+          args:
+            - "-addr"
+            - ":9090"
+            {{- range (get $m.args $mock | default list) }}
+            - {{ . | quote }}
+            {{- end }}
           ports:
             - {name: http, containerPort: 9090}
           readinessProbe:

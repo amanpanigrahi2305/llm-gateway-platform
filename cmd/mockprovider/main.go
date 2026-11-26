@@ -18,10 +18,18 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":9090", "listen address")
+	errorRate := flag.Float64("error-rate", 0, "share of requests that fail, 0 to 1 (a start value; PATCH /admin/settings can change it)")
+	errorStatus := flag.Int("error-status", 500, "HTTP status of injected errors, a 4xx or 5xx code")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	srv := &http.Server{Addr: *addr, Handler: newServer().routes(), ReadHeaderTimeout: 10 * time.Second}
+	start := defaultSettings()
+	start.ErrorRate, start.ErrorStatus = *errorRate, *errorStatus
+	if err := start.validate(); err != nil {
+		log.Error("invalid flags", "error", err.Error())
+		os.Exit(2)
+	}
+	srv := &http.Server{Addr: *addr, Handler: newServerWith(start).routes(), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -32,7 +40,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Info("mock provider listening", "addr", *addr)
+	log.Info("mock provider listening", "addr", *addr, "error_rate", start.ErrorRate, "error_status", start.ErrorStatus)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("server failed", "error", err)
 		os.Exit(1)

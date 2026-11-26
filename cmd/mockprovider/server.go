@@ -50,11 +50,16 @@ func (s Settings) validate() error {
 type server struct {
 	mu       sync.RWMutex
 	settings Settings
+	start    Settings       // what POST /admin/reset goes back to
 	random   func() float64 // replaced in tests
 }
 
-func newServer() *server {
-	return &server{settings: defaultSettings(), random: rand.Float64}
+func newServer() *server { return newServerWith(defaultSettings()) }
+
+// newServerWith starts the mock with the given settings (for example from
+// command-line flags); POST /admin/reset returns to them.
+func newServerWith(start Settings) *server {
+	return &server{settings: start, start: start, random: rand.Float64}
 }
 
 func (s *server) current() Settings {
@@ -230,7 +235,7 @@ func (s *server) patchSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) reset(w http.ResponseWriter, _ *http.Request) {
 	s.mu.Lock()
-	s.settings = defaultSettings()
+	s.settings = s.start
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, s.current())
 }

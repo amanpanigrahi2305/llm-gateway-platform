@@ -116,5 +116,6 @@ dev:
       tag: ""                  # default: the chart's appVersion
       pullPolicy: IfNotPresent
     names: [mock-a, mock-b]
+    args: {}                   # extra flags per mock, e.g. {mock-flaky: ["-error-rate", "0.5"]}
     serviceType: ClusterIP
     nodePorts: {}              # for type NodePort, for example {mock-a: 30091}
