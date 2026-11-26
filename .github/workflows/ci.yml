@@ -55,10 +55,28 @@ jobs:
         run: actionlint
       - name: helm lint
         run: make helm-lint
-      - name: checkov (Dockerfile, chart, workflows; skips in .checkov.yaml)
+      - name: checkov (Dockerfile, chart, workflows, Terraform; skips in .checkov.yaml)
         run: |
           pipx install checkov==3.4.6
           checkov -d .
+
+  terraform:
+    name: terraform (fmt, validate, mocked tests, tflint; offline)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install terraform and tflint
+        run: |
+          scripts/ci/install-tools.sh terraform tflint
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # No AWS credentials exist in this job: providers are mocked in the tests.
+      - name: terraform checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }} # tflint downloads its AWS ruleset from GitHub
+        run: scripts/ci/terraform-check.sh
 
   image:
     name: image (build, Trivy scan)

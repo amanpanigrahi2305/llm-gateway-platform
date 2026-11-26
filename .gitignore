@@ -40,6 +40,8 @@ go.work.sum
 .terraform/
 # Lock files belong to root configurations (examples, bootstrap), not modules.
 deploy/terraform/modules/**/.terraform.lock.hcl
+# Backend settings name the state bucket (account ID): keep them local.
+deploy/terraform/**/backend.hcl
 bin/
 dist/
 docs/evidence/*.har

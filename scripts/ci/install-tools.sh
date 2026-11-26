@@ -20,7 +20,10 @@ install_one() {
   local file="$work/${url##*/}"
   curl -fsSL --retry 3 -o "$file" "$url"
   echo "$sha  $file" | sha256sum -c --quiet -
-  if [ -n "$member" ]; then
+  if [ -n "$member" ] && [[ $file == *.zip ]]; then
+    python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract(sys.argv[2], sys.argv[3])' "$file" "$member" "$work"
+    install -m 0755 "$work/$member" "$DEST/$name"
+  elif [ -n "$member" ]; then
     tar -xzf "$file" -C "$work" "$member"
     install -m 0755 "$work/$member" "$DEST/$name"
   else
@@ -48,6 +51,12 @@ for t in "${tools[@]}"; do
     helm) install_one helm \
       https://get.helm.sh/helm-v4.3.2-linux-amd64.tar.gz \
       d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983 linux-amd64/helm ;;
+    terraform) install_one terraform \
+      https://releases.hashicorp.com/terraform/1.17.2/terraform_1.17.2_linux_amd64.zip \
+      e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b terraform ;;
+    tflint) install_one tflint \
+      https://github.com/terraform-linters/tflint/releases/download/v0.66.0/tflint_linux_amd64.zip \
+      22be11cadc25cd02401e94c0ccc91aa63467debb8485c2a755d98f4c0a9d1e2e tflint ;;
     *) echo "unknown tool: $t" >&2; exit 1 ;;
   esac
 done

@@ -1,12 +1,15 @@
 # Checkov settings for `checkov -d .` (CI runs it on every push).
-# Every skipped check is listed here with the reason. Everything else must pass.
+# Every skipped check is listed here with the reason, or inline in the Terraform
+# file next to the resource (#checkov:skip=ID:reason). Everything else must pass.
 framework:
   - dockerfile
   - helm
   - github_actions
   - secrets
+  - terraform
 skip-path:
   - loadtest
+  - .terraform
 compact: true
 quiet: true
 skip-check:

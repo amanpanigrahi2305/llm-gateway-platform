@@ -11,7 +11,7 @@ KIND_NAME  := llm-gateway
 METRICS_SERVER_VERSION := v0.9.1
 
 .PHONY: help build test test-integration lint fmt run-mock run-gateway gen-key clean dev-up dev-down \
-	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy kind-load gitops-up smoke scan kind-down
+	docker-build docker-build-multiarch compose-up compose-down helm-lint kind-up deploy kind-load gitops-up smoke scan kind-down tf-check aws-up aws-down
 
 help: ## list targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -108,6 +108,22 @@ scan: ## the CI scans: Trivy on both images (fails on CRITICAL), Checkov, gitlea
 
 kind-down: ## delete the kind cluster
 	kind delete cluster --name $(KIND_NAME)
+
+# --- AWS (Terraform). Only tf-check is free; aws-up/aws-down create or delete
+# paid resources and refuse to run without CONFIRM=yes. See docs/COST.md.
+TF_EXAMPLE := deploy/terraform/examples/aws-complete
+
+tf-check: ## Terraform offline: fmt, validate, tests with mocked providers, tflint (no AWS access)
+	scripts/ci/terraform-check.sh
+
+aws-up: ## create the AWS stack (COSTS MONEY): make aws-up CONFIRM=yes
+	@[ "$(CONFIRM)" = "yes" ] || { echo "This creates paid AWS resources (docs/COST.md). Run: make aws-up CONFIRM=yes"; exit 1; }
+	terraform -chdir=$(TF_EXAMPLE) init -backend-config=backend.hcl
+	terraform -chdir=$(TF_EXAMPLE) apply
+
+aws-down: ## delete the AWS stack: make aws-down CONFIRM=yes
+	@[ "$(CONFIRM)" = "yes" ] || { echo "This deletes the AWS stack. Run: make aws-down CONFIRM=yes"; exit 1; }
+	terraform -chdir=$(TF_EXAMPLE) destroy
 
 lint: ## go vet + golangci-lint
 	go vet ./...
